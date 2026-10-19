@@ -12,8 +12,12 @@ crash.*.log
 *.tfvars
 *.tfvars.json
 ansible/inventory.ini
+ansible/inventory.yml
 ansible/.generated/
 override.tf
 override.tf.json
 *_override.tf
 *_override.tf.json
+
+# Local working plans and notes
+.agent-notes/

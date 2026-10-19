@@ -1,0 +1,177 @@
+---
+- name: Prepare the local Ansible inventory from OpenTofu outputs
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    inventory_tofu_directory: "{{ playbook_dir }}/../../tofu"
+    inventory_tofu_binary: tofu
+    inventory_output_path: "{{ playbook_dir }}/../inventory.yml"
+    inventory_ssh_config_path: "{{ playbook_dir }}/../.generated/ssh_config"
+    inventory_ipv4_pattern: '^(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$'
+  tasks:
+    - name: Require the current controller SSH paths
+      ansible.builtin.assert:
+        that:
+          - inventory_ssh_private_key_path | default('') | length > 0
+          - inventory_known_hosts_path | default('') | length > 0
+        fail_msg: >-
+          Set inventory_ssh_private_key_path and inventory_known_hosts_path.
+          The known_hosts file must contain independently verified keys for
+          the bastion and every managed node.
+
+    - name: Resolve paths on the current controller
+      ansible.builtin.set_fact:
+        inventory_key_file: "{{ inventory_ssh_private_key_path | expanduser | realpath }}"
+        inventory_hosts_file: "{{ inventory_known_hosts_path | expanduser | realpath }}"
+        inventory_destination: "{{ inventory_output_path | expanduser | realpath }}"
+        inventory_config_file: "{{ inventory_ssh_config_path | expanduser | realpath }}"
+
+    - name: Require paths representable in the generated SSH configuration
+      ansible.builtin.assert:
+        that:
+          - item is match('^[^"\r\n%]+$')
+        fail_msg: SSH file paths must not contain quotes, newlines, or percent signs.
+      loop:
+        - "{{ inventory_key_file }}"
+        - "{{ inventory_hosts_file }}"
+        - "{{ inventory_destination }}"
+        - "{{ inventory_config_file }}"
+
+    - name: Inspect the local SSH files without reading their contents
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        follow: true
+        get_checksum: false
+        get_mime: false
+      loop:
+        - "{{ inventory_key_file }}"
+        - "{{ inventory_hosts_file }}"
+      register: inventory_ssh_files
+
+    - name: Require existing SSH files and private key permissions
+      ansible.builtin.assert:
+        that:
+          - inventory_ssh_files.results[0].stat.isreg | default(false)
+          - inventory_ssh_files.results[1].stat.isreg | default(false)
+          - inventory_ssh_files.results[0].stat.mode | default('') is match('^0[0-7]00$')
+          - inventory_key_file != inventory_hosts_file
+          - inventory_destination != inventory_config_file
+          - inventory_destination not in [inventory_key_file, inventory_hosts_file]
+          - inventory_config_file not in [inventory_key_file, inventory_hosts_file]
+        fail_msg: >-
+          SSH key and known_hosts must be existing regular files; the private
+          key must not grant group or other access. Generated files must have
+          separate paths and must not overwrite either input.
+
+    - name: Read only the required OpenTofu outputs
+      ansible.builtin.command:
+        argv:
+          - "{{ inventory_tofu_binary }}"
+          - "-chdir={{ inventory_tofu_directory | expanduser | realpath }}"
+          - output
+          - -json
+          - "{{ item }}"
+      loop:
+        - bastion_public_ip
+        - pxc_private_ips
+        - flowerca_private_ip
+      register: inventory_tofu_outputs
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Require outputs from an initialized and provisioned state
+      ansible.builtin.assert:
+        that:
+          - inventory_tofu_outputs.results | map(attribute='rc') | difference([0]) | length == 0
+        fail_msg: >-
+          Cannot read required infrastructure outputs. Initialize the S3 backend
+          and provision the infrastructure first; inventory preparation never
+          runs plan or apply.
+
+    - name: Decode the selected addresses
+      ansible.builtin.set_fact:
+        inventory_bastion_ip: "{{ inventory_tofu_outputs.results[0].stdout | from_json }}"
+        inventory_pxc_hosts: "{{ inventory_tofu_outputs.results[1].stdout | from_json }}"
+        inventory_flowerca_ip: "{{ inventory_tofu_outputs.results[2].stdout | from_json }}"
+      no_log: true
+
+    - name: Validate the output structure
+      ansible.builtin.assert:
+        that:
+          - inventory_bastion_ip is string
+          - inventory_flowerca_ip is string
+          - inventory_pxc_hosts is mapping
+          - inventory_pxc_hosts | length > 0
+        fail_msg: Expected a bastion IPv4, a nonempty PXC name-to-IPv4 map, and a FlowerCA IPv4.
+
+    - name: Validate PXC inventory names
+      ansible.builtin.assert:
+        that:
+          - item is match('^pxc-[1-9][0-9]*$')
+        fail_msg: PXC names must have the form pxc-1, pxc-2, and so on.
+      loop: "{{ inventory_pxc_hosts.keys() | list }}"
+
+    - name: Collect the addresses used by SSH
+      ansible.builtin.set_fact:
+        inventory_target_ips: >-
+          {{ [inventory_bastion_ip, inventory_flowerca_ip]
+             + (inventory_pxc_hosts.values() | list) }}
+
+    - name: Require valid IPv4 addresses
+      ansible.builtin.assert:
+        that:
+          - item is string
+          - item is match(inventory_ipv4_pattern)
+        fail_msg: Every infrastructure address must be a valid IPv4 address.
+      loop: "{{ inventory_target_ips }}"
+
+    - name: Require distinct host addresses
+      ansible.builtin.assert:
+        that:
+          - inventory_target_ips | unique | length == inventory_target_ips | length
+        fail_msg: The bastion, FlowerCA, and PXC nodes must have distinct addresses.
+
+    - name: Check that a pinned host key exists for every address
+      ansible.builtin.command:
+        argv:
+          - ssh-keygen
+          - -F
+          - "{{ item }}"
+          - -f
+          - "{{ inventory_hosts_file }}"
+      loop: "{{ inventory_target_ips }}"
+      register: inventory_host_keys
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Require a trusted host key entry for every node
+      ansible.builtin.assert:
+        that:
+          - inventory_host_keys.results | map(attribute='rc') | difference([0]) | length == 0
+        fail_msg: >-
+          A host key entry is missing for
+          {{ inventory_host_keys.results | rejectattr('rc', 'equalto', 0)
+             | map(attribute='item') | join(', ') }}.
+          Verify the keys using a trusted channel and update known_hosts.
+          No keys are collected or trusted automatically.
+
+    - name: Create the generated SSH configuration directory
+      ansible.builtin.file:
+        path: "{{ inventory_config_file | dirname }}"
+        state: directory
+        mode: "0700"
+
+    - name: Render strict SSH access through the bastion
+      ansible.builtin.template:
+        src: ../templates/ssh_config.j2
+        dest: "{{ inventory_config_file }}"
+        mode: "0600"
+
+    - name: Render the inventory for the current controller
+      ansible.builtin.template:
+        src: ../templates/inventory.yml.j2
+        dest: "{{ inventory_destination }}"
+        mode: "0600"

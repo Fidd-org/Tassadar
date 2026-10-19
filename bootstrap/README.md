@@ -1,3 +1,7 @@
+> Legacy optional module: the agreed architecture runs OpenTofu and Ansible
+> directly on GitHub-hosted runners through the existing bastion. This manager
+> module and its workflows are not required. See [the current architecture](../README.md#infrastructure-management).
+
 # Management VM bootstrap
 
 This standalone OpenTofu root creates a management VM from a GitHub-hosted
@@ -76,10 +80,10 @@ environment, and Git. Installation failures must be resolved before using the VM
 Changes to creation settings or cloud-init may require VM replacement; inspect
 the plan before applying updates.
 
-After bootstrap, follow [the infrastructure management rollout](../docs/management.md).
-The next workflow uses a GitHub-hosted runner and SSH to check VM readiness.
-The management VM will execute future OpenTofu and Ansible operations over SSH;
-it is not registered as a persistent self-hosted GitHub runner.
+The old automated management VM readiness workflow has been retired.
+Use the manual SSH checks above if running this optional legacy module.
+The current architecture runs OpenTofu and Ansible directly on hosted runners
+through the bastion; see [the main README](../README.md#infrastructure-management).
 
 Ansible Vault integration is deferred. For this stage, only the DigitalOcean
 and Spaces credentials in GitHub Secrets are needed.

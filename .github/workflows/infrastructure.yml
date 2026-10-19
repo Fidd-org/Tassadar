@@ -1,0 +1,204 @@
+name: Manage infrastructure
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Preview changes or create and apply a fresh plan
+        type: choice
+        options:
+          - plan
+          - apply
+        default: plan
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tassadar-production
+  cancel-in-progress: false
+
+jobs:
+  infrastructure:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+        working-directory: tofu
+    env:
+      TF_IN_AUTOMATION: "true"
+      TF_INPUT: "false"
+
+    steps:
+      - name: Check out Tassadar
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install OpenTofu
+        uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: 1.12.3
+          tofu_wrapper: false
+
+      - name: Prepare runtime configuration
+        id: configure
+        env:
+          TF_VAR_digitalocean_token: ${{ secrets.DIGITALOCEAN_TOKEN }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+          OPERATION: ${{ inputs.operation }}
+          INFRA_SSH_PUBLIC_KEY: ${{ vars.INFRA_SSH_PUBLIC_KEY }}
+          INFRA_ADMIN_CIDR: ${{ vars.INFRA_ADMIN_CIDR || '0.0.0.0/0' }}
+          INFRA_PROJECT_ID: ${{ vars.INFRA_PROJECT_ID }}
+          INFRA_REGION: ${{ vars.INFRA_REGION || 'fra1' }}
+        run: |
+          set -euo pipefail
+          case "$OPERATION" in
+            plan|apply) ;;
+            *) echo '::error::Choose plan or apply'; exit 1 ;;
+          esac
+          for required_name in TF_VAR_digitalocean_token AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY INFRA_SSH_PUBLIC_KEY; do
+            if [[ -z "${!required_name}" ]]; then
+              echo "::error::$required_name is required"
+              exit 1
+            fi
+          done
+          if [[ -n "$INFRA_PROJECT_ID" && ! "$INFRA_PROJECT_ID" =~ ^[[:xdigit:]]{8}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{4}-[[:xdigit:]]{12}$ ]]; then
+            echo '::error::INFRA_PROJECT_ID must be a project UUID or empty'
+            exit 1
+          fi
+
+          umask 077
+          runtime_directory="$RUNNER_TEMP/tassadar-infra"
+          mkdir -p -- "$runtime_directory"
+          printf '%s\n' "$INFRA_SSH_PUBLIC_KEY" | tr -d '\r' > "$runtime_directory/ssh.pub"
+          if [[ "$(awk 'NF { count++ } END { print count+0 }' "$runtime_directory/ssh.pub")" != 1 ]] ||
+             ! grep -Eq '^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh.com|sk-ecdsa-sha2-nistp256@openssh.com) ' "$runtime_directory/ssh.pub" ||
+             ! ssh-keygen -lf "$runtime_directory/ssh.pub" > /dev/null 2>&1; then
+            echo '::error::INFRA_SSH_PUBLIC_KEY must contain one valid OpenSSH public key, already registered in DigitalOcean'
+            exit 1
+          fi
+
+          jq -n \
+            --arg key_path "$runtime_directory/ssh.pub" \
+            --arg cidr "$INFRA_ADMIN_CIDR" \
+            --arg project "$INFRA_PROJECT_ID" \
+            --arg region "$INFRA_REGION" \
+            '{ssh_public_key_path: $key_path, admin_cidr: $cidr,
+              project_id: (if $project == "" then null else $project end),
+              region: $region}' > "$runtime_directory/variables.tfvars.json"
+
+      - name: Check formatting
+        run: tofu fmt -check -recursive
+
+      - name: Initialize infrastructure state
+        id: initialize
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+        run: tofu init -input=false -lockfile=readonly -no-color
+
+      - name: Validate configuration
+        id: validate
+        run: tofu validate -no-color
+
+      - name: Plan infrastructure
+        id: plan
+        env:
+          TF_VAR_digitalocean_token: ${{ secrets.DIGITALOCEAN_TOKEN }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          runtime_directory="$RUNNER_TEMP/tassadar-infra"
+          set +e
+          tofu plan -input=false -no-color -detailed-exitcode -lock-timeout=5m \
+            -var-file="$runtime_directory/variables.tfvars.json" \
+            -out="$runtime_directory/plan.tfplan"
+          plan_exit=$?
+          set -e
+          if [[ "$plan_exit" != 0 && "$plan_exit" != 2 ]]; then
+            exit "$plan_exit"
+          fi
+
+          # Only aggregate action counts leave this pipe; plan JSON can contain secrets.
+          tofu show -json "$runtime_directory/plan.tfplan" |
+            jq -r '
+              [.resource_changes[]? | select(.mode == "managed") | .change.actions[]] as $actions |
+              "create=\($actions | map(select(. == "create")) | length)",
+              "update=\($actions | map(select(. == "update")) | length)",
+              "delete=\($actions | map(select(. == "delete")) | length)",
+              "forget=\($actions | map(select(. == "forget")) | length)"
+            ' >> "$GITHUB_OUTPUT"
+
+      - name: Apply infrastructure
+        id: apply
+        if: inputs.operation == 'apply'
+        env:
+          TF_VAR_digitalocean_token: ${{ secrets.DIGITALOCEAN_TOKEN }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+        run: tofu apply -input=false -no-color -lock-timeout=5m "$RUNNER_TEMP/tassadar-infra/plan.tfplan"
+
+      - name: Report infrastructure result
+        if: always()
+        env:
+          OPERATION: ${{ inputs.operation }}
+          CONFIGURATION_OUTCOME: ${{ steps.configure.outcome }}
+          INITIALIZATION_OUTCOME: ${{ steps.initialize.outcome }}
+          VALIDATION_OUTCOME: ${{ steps.validate.outcome }}
+          PLAN_OUTCOME: ${{ steps.plan.outcome }}
+          APPLY_OUTCOME: ${{ steps.apply.outcome }}
+          CREATE_COUNT: ${{ steps.plan.outputs.create }}
+          UPDATE_COUNT: ${{ steps.plan.outputs.update }}
+          DELETE_COUNT: ${{ steps.plan.outputs.delete }}
+          FORGET_COUNT: ${{ steps.plan.outputs.forget }}
+        run: |
+          {
+            echo '### Infrastructure operation'
+            echo
+            echo "Requested operation: $OPERATION"
+            echo
+            echo '| Step | Result |'
+            echo '| --- | --- |'
+            echo "| Runtime configuration | $CONFIGURATION_OUTCOME |"
+            echo "| S3 backend initialization | $INITIALIZATION_OUTCOME |"
+            echo "| Configuration validation | $VALIDATION_OUTCOME |"
+            echo "| Plan | $PLAN_OUTCOME |"
+            echo "| Apply | $APPLY_OUTCOME |"
+            if [[ "$PLAN_OUTCOME" == success ]]; then
+              echo
+              echo "| Planned action | Resource count |"
+              echo "| --- | --- |"
+              echo "| Create | $CREATE_COUNT |"
+              echo "| Update | $UPDATE_COUNT |"
+              echo "| Delete (including replacements) | $DELETE_COUNT |"
+              echo "| Forget state entry | $FORGET_COUNT |"
+            fi
+            echo
+            if [[ "$APPLY_OUTCOME" == success ]]; then
+              echo '**Infrastructure apply completed.**'
+            elif [[ "$OPERATION" == plan && "$PLAN_OUTCOME" == success ]]; then
+              echo '**Plan completed. Apply was not requested.**'
+            else
+              echo '**Requested operation did not complete.** Inspect the failed step logs.'
+              echo 'An interrupted or failed apply can leave partially changed infrastructure.'
+            fi
+            echo
+            echo 'SSH readiness, inventory generation, and PXC installation/recovery are not performed by this workflow.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove temporary configuration and plan
+        if: always()
+        run: |
+          runtime_directory="$RUNNER_TEMP/tassadar-infra"
+          if [[ -d "$runtime_directory" ]]; then
+            rm -f -- "$runtime_directory/plan.tfplan" \
+              "$runtime_directory/variables.tfvars.json" "$runtime_directory/ssh.pub"
+            rmdir -- "$runtime_directory"
+          fi

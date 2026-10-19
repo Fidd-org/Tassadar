@@ -1,3 +1,33 @@
+# Controller inventory
+
+Before deployment, verification, or recovery, initialize the OpenTofu backend
+and run from `ansible/`:
+
+```bash
+ansible-playbook -i localhost, playbooks/prepare-inventory.yml \
+  -e inventory_ssh_private_key_path="$HOME/.ssh/id_tassadar" \
+  -e inventory_known_hosts_path="$HOME/.ssh/known_hosts"
+```
+
+The local-only playbook reads selected outputs from state and creates
+`inventory.yml` and `.generated/ssh_config` for this controller. It does not
+run plan/apply. Supply a private key with mode 0600 (or stricter) and verified
+known_hosts entries for the bastion public IP and all managed private IPs.
+SSH checks host keys on both hops and keeps private keys on the controller.
+
+Run this before each Ansible operation on a fresh GitHub runner, and again
+after a Droplet replacement and verification of the replacement's host key.
+An empty or invalid state cannot supply inventory. See the root
+[configuration instructions](../README.md#configuration) for backend credentials.
+After switching from the formerly hard-coded AWS profile, select a local
+profile with `AWS_PROFILE=tassadar-spaces` and run `tofu init -reconfigure`;
+CI can instead use standard AWS environment credentials.
+
+The former Terraform-generated `inventory.ini` is no longer selected by
+default. On the next approved apply, a `removed` block forgets the old
+`local_file.ansible_inventory` state entry without deleting the old local file.
+The default inventory is now `inventory.yml`.
+
 # playbooks/pxc.yml
 
 This playbook installs and configures a three-node Percona XtraDB Cluster. It
@@ -118,7 +148,7 @@ survivor's cache.
 
 The recovery node must already be reachable over SSH. If the Droplet itself is
 lost, use OpenTofu first to replace that Droplet, reattach its data volume, and
-regenerate `inventory.ini`. Do not use this playbook for a full-cluster outage;
+regenerate `inventory.yml`. Do not use this playbook for a full-cluster outage;
 that procedure must select a safe bootstrap node from Galera recovery state.
 
 For example, inspect the replacement plan before applying it:
@@ -131,7 +161,8 @@ tofu apply -replace='digitalocean_droplet.pxc["pxc-3"]'
 
 The plan must replace the selected Droplet and its attachment without replacing
 the corresponding `digitalocean_volume.pxc_data` resource. After apply,
-return to `ansible/` and run the recovery playbook with the same node name.
+verify the replacement host key, return to `ansible/`, prepare inventory,
+and run the recovery playbook with the same node name.
 
 Project-level run commands, connectivity checks, and basic MySQL commands are
 documented in the root `README.md`.
