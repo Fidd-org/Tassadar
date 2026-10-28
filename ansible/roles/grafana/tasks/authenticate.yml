@@ -1,0 +1,14 @@
+---
+- name: Verify the supplied Grafana administrator without retrying invalid credentials
+  ansible.builtin.uri:
+    url: http://{{ grafana_address }}:3000/api/user
+    url_username: admin
+    url_password: '{{ grafana_admin_password }}'
+    force_basic_auth: true
+    use_proxy: false
+    return_content: true
+  register: grafana_admin_check
+  changed_when: false
+  failed_when: (grafana_admin_check.status | default(0)) != 200 or (grafana_admin_check.json.login | default(''))
+    != 'admin' or not (grafana_admin_check.json.isGrafanaAdmin | default(false) | bool)
+  no_log: true

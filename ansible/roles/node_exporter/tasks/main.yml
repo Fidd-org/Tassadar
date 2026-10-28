@@ -1,0 +1,110 @@
+---
+- name: Validate Node Exporter platform and bind address
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.distribution == 'Ubuntu'
+      - ansible_facts.distribution_major_version == '24'
+      - ansible_facts.architecture == 'x86_64'
+      - ansible_facts.service_mgr == 'systemd'
+      - node_exporter_version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
+      - node_exporter_checksum is match('^sha256:[a-f0-9]{64}$')
+      - node_exporter_address is match('^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)')
+      - node_exporter_address in ansible_facts.all_ipv4_addresses
+    fail_msg: Node Exporter requires Ubuntu 24.04 amd64/systemd and an assigned private IPv4.
+
+- name: Wait for cloud-init before package operations
+  ansible.builtin.command: cloud-init status --wait
+  changed_when: false
+
+- name: Install release extraction prerequisites
+  ansible.builtin.apt:
+    name: [ca-certificates, tar]
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create the Node Exporter service group
+  ansible.builtin.group:
+    name: node_exporter
+    system: true
+
+- name: Create the unprivileged Node Exporter user
+  ansible.builtin.user:
+    name: node_exporter
+    group: node_exporter
+    system: true
+    create_home: false
+    home: /nonexistent
+    shell: /usr/sbin/nologin
+
+- name: Create root-owned release directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /var/cache/tassadar
+    - /opt/tassadar
+
+- name: Download the pinned Node Exporter archive
+  ansible.builtin.get_url:
+    url: "https://github.com/prometheus/node_exporter/releases/download/v{{ node_exporter_version }}/node_exporter-{{ node_exporter_version }}.linux-amd64.tar.gz"
+    dest: "/var/cache/tassadar/node_exporter-{{ node_exporter_version }}.linux-amd64.tar.gz"
+    checksum: "{{ node_exporter_checksum }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Extract the verified Node Exporter release
+  ansible.builtin.unarchive:
+    src: "/var/cache/tassadar/node_exporter-{{ node_exporter_version }}.linux-amd64.tar.gz"
+    dest: /opt/tassadar
+    remote_src: true
+    creates: "/opt/tassadar/node_exporter-{{ node_exporter_version }}.linux-amd64/node_exporter"
+    owner: root
+    group: root
+
+- name: Install the Node Exporter binary
+  ansible.builtin.copy:
+    src: "/opt/tassadar/node_exporter-{{ node_exporter_version }}.linux-amd64/node_exporter"
+    dest: /usr/local/bin/node_exporter
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Restart Node Exporter
+
+- name: Configure Node Exporter systemd service
+  ansible.builtin.template:
+    src: node_exporter.service.j2
+    dest: /etc/systemd/system/node_exporter.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart Node Exporter
+
+- name: Apply pending Node Exporter changes before checking metrics
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start Node Exporter
+  ansible.builtin.systemd_service:
+    name: node_exporter
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Verify Node Exporter serves host metrics locally
+  ansible.builtin.uri:
+    url: "http://{{ node_exporter_address }}:9100/metrics"
+    use_proxy: false
+    return_content: true
+  register: node_exporter_metrics
+  changed_when: false
+  until:
+    - node_exporter_metrics.status | default(0) == 200
+    - "'node_exporter_build_info{' in (node_exporter_metrics.content | default(''))"
+    - "'node_uname_info{' in (node_exporter_metrics.content | default(''))"
+  retries: 12
+  delay: 5

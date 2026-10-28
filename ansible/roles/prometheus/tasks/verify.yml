@@ -1,0 +1,61 @@
+---
+- name: Require expected Node Exporter targets for verification
+  ansible.builtin.assert:
+    that:
+      - groups['node_exporter'] | default([]) | length > 0
+    fail_msg: Verification requires the complete node_exporter inventory group.
+
+- name: Wait until Prometheus is ready
+  ansible.builtin.uri:
+    url: "http://{{ prometheus_address }}:9090/-/ready"
+    use_proxy: false
+  register: prometheus_ready
+  changed_when: false
+  until: prometheus_ready.status | default(0) == 200
+  retries: "{{ prometheus_verify_retries }}"
+  delay: "{{ prometheus_verify_delay }}"
+
+- name: Require all expected scrape targets to be UP
+  ansible.builtin.uri:
+    url: "http://{{ prometheus_address }}:9090/api/v1/targets?state=active"
+    use_proxy: false
+    return_content: true
+  register: prometheus_targets
+  changed_when: false
+  until:
+    - prometheus_targets.status | default(0) == 200
+    - prometheus_targets.json.status | default('') == 'success'
+    - >-
+      (prometheus_targets.json.data.activeTargets | default([])
+       | selectattr('labels.job', 'equalto', 'node')
+       | map(attribute='labels.instance') | sort | list)
+      == (groups['node_exporter'] | sort)
+    - >-
+      (prometheus_targets.json.data.activeTargets | default([])
+       | selectattr('labels.job', 'equalto', 'prometheus')
+       | map(attribute='labels.instance') | list) == [inventory_hostname]
+    - prometheus_targets.json.data.activeTargets | default([]) | length == (groups['node_exporter'] | length) + 1
+    - prometheus_targets.json.data.activeTargets | default([]) | rejectattr('health', 'equalto', 'up') | list | length == 0
+  retries: "{{ prometheus_verify_retries }}"
+  delay: "{{ prometheus_verify_delay }}"
+
+- name: Require host metrics in the query database for every inventory node
+  ansible.builtin.uri:
+    url: >-
+      http://{{ prometheus_address }}:9090/api/v1/query?query={{ 'count by(instance) (node_uname_info{job="node"})' | urlencode }}
+    use_proxy: false
+    return_content: true
+  register: prometheus_host_metrics
+  changed_when: false
+  until:
+    - prometheus_host_metrics.status | default(0) == 200
+    - prometheus_host_metrics.json.status | default('') == 'success'
+    - >-
+      (prometheus_host_metrics.json.data.result | default([])
+       | map(attribute='metric.instance') | sort | list)
+      == (groups['node_exporter'] | sort)
+    - >-
+      (prometheus_host_metrics.json.data.result | default([])
+       | map(attribute='value') | map('last') | unique | list) == ['1']
+  retries: "{{ prometheus_verify_retries }}"
+  delay: "{{ prometheus_verify_delay }}"

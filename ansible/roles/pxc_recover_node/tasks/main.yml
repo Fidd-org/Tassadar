@@ -1,6 +1,6 @@
  # todo уничтожение всех данных и первичная установка заново
  # перенести это всё в облако
----ну
+---
 - name: Stop bootstrap service on recovery node
   ansible.builtin.systemd:
     name: mysql@bootstrap.service

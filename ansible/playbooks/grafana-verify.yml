@@ -1,0 +1,9 @@
+---
+- name: Verify Grafana, its provisioned dashboard and Prometheus queries
+  hosts: grafana
+  gather_facts: false
+  tasks:
+    - name: Run shared Grafana verification
+      ansible.builtin.import_role:
+        name: grafana
+        tasks_from: verify

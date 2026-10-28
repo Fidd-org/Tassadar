@@ -1,0 +1,9 @@
+---
+grafana_version: "13.2.4"
+grafana_archive_url: "https://dl.grafana.com/grafana/release/13.2.4/grafana_13.2.4_38252365904_linux_amd64.tar.gz"
+grafana_checksum: "sha256:c48765988fd88572607e4ea670251af8a8e64ab3e360d0f3cf67a6f3587b92ab"
+grafana_address: "{{ ansible_host }}"
+grafana_prometheus_address: "{{ hostvars[groups['prometheus'] | first].ansible_host }}"
+grafana_admin_password: "{{ lookup('ansible.builtin.env', 'GRAFANA_ADMIN_PASSWORD') }}"
+grafana_verify_retries: 30
+grafana_verify_delay: 5

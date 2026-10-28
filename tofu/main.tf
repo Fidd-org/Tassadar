@@ -31,6 +31,7 @@ resource "digitalocean_project_resources" "tassadar" {
     [digitalocean_droplet.bastion.urn],
     [for droplet in digitalocean_droplet.pxc : droplet.urn],
     [digitalocean_droplet.flowerca.urn],
+    [for droplet in digitalocean_droplet.monitoring : droplet.urn],
     [for volume in digitalocean_volume.pxc_data : volume.urn],
   )
 }

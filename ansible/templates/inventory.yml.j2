@@ -9,6 +9,7 @@ all:
       hosts:
         pxc-bastion:
           ansible_host: {{ inventory_bastion_ip | to_json }}
+          node_exporter_address: {{ inventory_bastion_private_ip | to_json }}
     pxc:
       hosts:
 {% for name, address in inventory_pxc_hosts | dictsort %}
@@ -19,3 +20,19 @@ all:
       hosts:
         flowerca-1:
           ansible_host: {{ inventory_flowerca_ip | to_json }}
+    monitoring:
+      children:
+        prometheus:
+          hosts:
+            prometheus-1:
+              ansible_host: {{ inventory_monitoring_hosts['prometheus-1'] | to_json }}
+        grafana:
+          hosts:
+            grafana-1:
+              ansible_host: {{ inventory_monitoring_hosts['grafana-1'] | to_json }}
+    node_exporter:
+      children:
+        bastion: {}
+        pxc: {}
+        flowerca: {}
+        monitoring: {}

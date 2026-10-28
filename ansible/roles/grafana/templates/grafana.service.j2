@@ -1,0 +1,27 @@
+[Unit]
+Description=Grafana dashboards
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=grafana
+Group=grafana
+WorkingDirectory=/opt/tassadar/grafana-{{ grafana_version }}
+ExecStart=/opt/tassadar/grafana-{{ grafana_version }}/bin/grafana server --homepath=/opt/tassadar/grafana-{{ grafana_version }} --config=/etc/grafana/grafana.ini
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=60
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/grafana
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

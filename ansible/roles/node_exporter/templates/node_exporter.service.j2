@@ -1,0 +1,22 @@
+[Unit]
+Description=Prometheus Node Exporter
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=node_exporter
+Group=node_exporter
+ExecStart=/usr/local/bin/node_exporter --web.listen-address={{ node_exporter_address }}:9100
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+# Do not remount host data filesystems: filesystem metrics must reflect host mounts.
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

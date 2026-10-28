@@ -1,0 +1,128 @@
+---
+- name: Validate Prometheus platform and inventory
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.distribution == 'Ubuntu'
+      - ansible_facts.distribution_major_version == '24'
+      - ansible_facts.architecture == 'x86_64'
+      - ansible_facts.service_mgr == 'systemd'
+      - groups['prometheus'] | default([]) | length == 1
+      - groups['node_exporter'] | default([]) | length > 0
+      - prometheus_version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
+      - prometheus_checksum is match('^sha256:[a-f0-9]{64}$')
+      - prometheus_address is match('^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)')
+      - prometheus_address in ansible_facts.all_ipv4_addresses
+    fail_msg: Prometheus requires Ubuntu 24.04 amd64/systemd, one server, private IPv4 and node_exporter targets.
+
+- name: Wait for cloud-init before package operations
+  ansible.builtin.command: cloud-init status --wait
+  changed_when: false
+
+- name: Install release extraction prerequisites
+  ansible.builtin.apt:
+    name: [ca-certificates, tar]
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create the Prometheus service group
+  ansible.builtin.group:
+    name: prometheus
+    system: true
+
+- name: Create the unprivileged Prometheus user
+  ansible.builtin.user:
+    name: prometheus
+    group: prometheus
+    system: true
+    create_home: false
+    home: /var/lib/prometheus
+    shell: /usr/sbin/nologin
+
+- name: Create root-owned release directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /var/cache/tassadar
+    - /opt/tassadar
+
+- name: Create the Prometheus configuration directory
+  ansible.builtin.file:
+    path: /etc/prometheus
+    state: directory
+    owner: root
+    group: prometheus
+    mode: "0750"
+
+- name: Create the Prometheus data directory without resetting existing data
+  ansible.builtin.file:
+    path: /var/lib/prometheus
+    state: directory
+    owner: prometheus
+    group: prometheus
+    mode: "0750"
+
+- name: Download the pinned Prometheus archive
+  ansible.builtin.get_url:
+    url: "https://github.com/prometheus/prometheus/releases/download/v{{ prometheus_version }}/prometheus-{{ prometheus_version }}.linux-amd64.tar.gz"
+    dest: "/var/cache/tassadar/prometheus-{{ prometheus_version }}.linux-amd64.tar.gz"
+    checksum: "{{ prometheus_checksum }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Extract the verified Prometheus release
+  ansible.builtin.unarchive:
+    src: "/var/cache/tassadar/prometheus-{{ prometheus_version }}.linux-amd64.tar.gz"
+    dest: /opt/tassadar
+    remote_src: true
+    creates: "/opt/tassadar/prometheus-{{ prometheus_version }}.linux-amd64/prometheus"
+    owner: root
+    group: root
+
+- name: Install Prometheus and its configuration validator
+  ansible.builtin.copy:
+    src: "/opt/tassadar/prometheus-{{ prometheus_version }}.linux-amd64/{{ item }}"
+    dest: "/usr/local/bin/{{ item }}"
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0755"
+  loop: [prometheus, promtool]
+  notify: Restart Prometheus
+
+- name: Validate and install Prometheus configuration
+  ansible.builtin.template:
+    src: prometheus.yml.j2
+    dest: /etc/prometheus/prometheus.yml
+    owner: root
+    group: prometheus
+    mode: "0640"
+    validate: /usr/local/bin/promtool check config %s
+  notify: Restart Prometheus
+
+- name: Configure Prometheus systemd service
+  ansible.builtin.template:
+    src: prometheus.service.j2
+    dest: /etc/systemd/system/prometheus.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart Prometheus
+
+- name: Apply pending Prometheus changes before checking scrapes
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start Prometheus
+  ansible.builtin.systemd_service:
+    name: prometheus
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Verify readiness and collected host metrics
+  ansible.builtin.import_tasks: verify.yml

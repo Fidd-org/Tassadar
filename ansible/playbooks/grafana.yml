@@ -1,0 +1,7 @@
+---
+- name: Install Grafana and provision the monitoring UI
+  hosts: grafana
+  become: true
+  any_errors_fatal: true
+  roles:
+    - grafana

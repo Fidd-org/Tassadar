@@ -1,0 +1,25 @@
+# Managed by Ansible. Regenerate from the current controller inventory.
+global:
+  scrape_interval: {{ prometheus_scrape_interval | to_json }}
+  scrape_timeout: {{ prometheus_scrape_timeout | to_json }}
+  evaluation_interval: {{ prometheus_scrape_interval | to_json }}
+
+storage:
+  tsdb:
+    retention:
+      time: {{ prometheus_retention_time | to_json }}
+      size: {{ prometheus_retention_size | to_json }}
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: [{{ (prometheus_address ~ ':9090') | to_json }}]
+        labels:
+          instance: {{ inventory_hostname | to_json }}
+  - job_name: node
+    static_configs:
+{% for host in groups['node_exporter'] | sort %}
+      - targets: [{{ ((hostvars[host].node_exporter_address | default(hostvars[host].ansible_host)) ~ ':9100') | to_json }}]
+        labels:
+          instance: {{ host | to_json }}
+{% endfor %}

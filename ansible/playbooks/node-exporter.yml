@@ -1,0 +1,7 @@
+---
+- name: Install Node Exporter on every managed VM
+  hosts: node_exporter
+  become: true
+  any_errors_fatal: true
+  roles:
+    - node_exporter

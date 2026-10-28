@@ -15,6 +15,15 @@ run plan/apply. Supply a private key with mode 0600 (or stricter) and verified
 known_hosts entries for the bastion public IP and all managed private IPs.
 SSH checks host keys on both hops and keeps private keys on the controller.
 
+Required outputs are `bastion_public_ip`, `bastion_private_ip`,
+`pxc_private_ips`, `flowerca_private_ip`, and `monitoring_private_ips`. Apply the monitoring
+infrastructure before regenerating inventory from an older state. The
+monitoring map must contain exactly `prometheus-1` and `grafana-1`; verified
+host keys are required for both private IPs. The resulting groups are
+`prometheus` and `grafana` under `monitoring`. Both use the same strict
+ProxyJump configuration as PXC. Node Exporter, Prometheus and Grafana playbooks are
+covered in [monitoring.md](monitoring.md).
+
 Run this before each Ansible operation on a fresh GitHub runner, and again
 after a Droplet replacement and verification of the replacement's host key.
 An empty or invalid state cannot supply inventory. See the root

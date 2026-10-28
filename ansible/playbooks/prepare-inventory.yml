@@ -76,6 +76,8 @@
         - bastion_public_ip
         - pxc_private_ips
         - flowerca_private_ip
+        - monitoring_private_ips
+        - bastion_private_ip
       register: inventory_tofu_outputs
       changed_when: false
       failed_when: false
@@ -95,16 +97,21 @@
         inventory_bastion_ip: "{{ inventory_tofu_outputs.results[0].stdout | from_json }}"
         inventory_pxc_hosts: "{{ inventory_tofu_outputs.results[1].stdout | from_json }}"
         inventory_flowerca_ip: "{{ inventory_tofu_outputs.results[2].stdout | from_json }}"
+        inventory_monitoring_hosts: "{{ inventory_tofu_outputs.results[3].stdout | from_json }}"
+        inventory_bastion_private_ip: "{{ inventory_tofu_outputs.results[4].stdout | from_json }}"
       no_log: true
 
     - name: Validate the output structure
       ansible.builtin.assert:
         that:
           - inventory_bastion_ip is string
+          - inventory_bastion_private_ip is string
           - inventory_flowerca_ip is string
           - inventory_pxc_hosts is mapping
           - inventory_pxc_hosts | length > 0
-        fail_msg: Expected a bastion IPv4, a nonempty PXC name-to-IPv4 map, and a FlowerCA IPv4.
+          - inventory_monitoring_hosts is mapping
+          - inventory_monitoring_hosts.keys() | list | sort == ['grafana-1', 'prometheus-1']
+        fail_msg: Expected bastion/FlowerCA IPv4s, a nonempty PXC map, and prometheus-1/grafana-1 in the monitoring map.
 
     - name: Validate PXC inventory names
       ansible.builtin.assert:
@@ -117,7 +124,12 @@
       ansible.builtin.set_fact:
         inventory_target_ips: >-
           {{ [inventory_bastion_ip, inventory_flowerca_ip]
-             + (inventory_pxc_hosts.values() | list) }}
+             + (inventory_pxc_hosts.values() | list)
+             + (inventory_monitoring_hosts.values() | list) }}
+
+    - name: Collect SSH and metrics addresses for validation
+      ansible.builtin.set_fact:
+        inventory_all_ips: "{{ inventory_target_ips + [inventory_bastion_private_ip] }}"
 
     - name: Require valid IPv4 addresses
       ansible.builtin.assert:
@@ -125,13 +137,13 @@
           - item is string
           - item is match(inventory_ipv4_pattern)
         fail_msg: Every infrastructure address must be a valid IPv4 address.
-      loop: "{{ inventory_target_ips }}"
+      loop: "{{ inventory_all_ips }}"
 
     - name: Require distinct host addresses
       ansible.builtin.assert:
         that:
-          - inventory_target_ips | unique | length == inventory_target_ips | length
-        fail_msg: The bastion, FlowerCA, and PXC nodes must have distinct addresses.
+          - inventory_all_ips | unique | length == inventory_all_ips | length
+        fail_msg: All infrastructure nodes must have distinct addresses.
 
     - name: Check that a pinned host key exists for every address
       ansible.builtin.command:

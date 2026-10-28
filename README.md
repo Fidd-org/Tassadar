@@ -9,7 +9,61 @@ OpenTofu provisions a three-node Percona XtraDB Cluster in DigitalOcean. Ansible
 - one FlowerCA application Droplet connected to PXC over the private VPC;
 - three PXC Droplets connected through private VPC addresses;
 - one dedicated ext4 Block Storage volume per PXC node;
+- separate Prometheus and Grafana Droplets in the same VPC and state;
 - Cloud Firewalls allowing SSH to FlowerCA only from the bastion, public HTTPS to FlowerCA, MySQL from FlowerCA to PXC, and Galera traffic only between PXC nodes.
+
+## Monitoring infrastructure
+
+The main OpenTofu root includes `pxc-prometheus` and `pxc-grafana` (names
+follow `name_prefix`). Each uses Ubuntu 24.04, 1 vCPU and 2 GB RAM, configured
+in `tofu/node-configs.tf`. These are starting sizes for the test environment;
+retention, scrape load, and storage sizing are part of service configuration.
+Data uses the VM root disks for now; no persistent monitoring volumes or
+backup policy are provisioned. Full destroy deletes both VM disks and their data.
+
+The VMs share the existing VPC and main state with PXC. A full destroy removes
+monitoring along with the cluster. The current state may be empty: a plan then
+creates the whole environment, not just the two monitoring VMs.
+
+Each monitoring VM has its own role tag and Cloud Firewall. Inbound rules
+use `source_tags`, so IPs do not need to be known in advance:
+
+| Destination | TCP port | Allowed source |
+| --- | --- | --- |
+| Prometheus/Grafana SSH | 22 | Bastion |
+| Grafana UI | 3000 | Bastion |
+| Prometheus API/UI | 9090 | Grafana, bastion |
+| Node Exporter on every VM | 9100 | Prometheus |
+| MySQL Exporter on PXC | 9104 | Prometheus |
+
+There is no public UI or exporter ingress. Existing public bastion SSH and
+FlowerCA HTTPS rules are unchanged. Outbound rules follow the existing
+configuration and allow internet access for package installation.
+
+Tags identify permitted Droplets; they do not select a network interface or
+authenticate applications. Future Ansible roles must bind service/exporter
+listeners and configure scrape/datasource URLs to private VPC addresses.
+The future MySQL exporter will connect to MySQL locally; Prometheus is not
+granted direct port 3306 access. [Ansible playbooks](ansible/monitoring.md)
+install Node Exporter, Prometheus and Grafana separately from infrastructure
+apply. MySQL Exporter service automation remains planned.
+
+After apply, `monitoring_private_ips` and `monitoring_instance_ids` describe
+both nodes. Regenerate inventory after verifying their host keys. Groups
+`prometheus` and `grafana` are children of `monitoring` and use SSH ProxyJump
+through the bastion.
+
+Once Grafana is installed, access it through a tunnel from the controller
+using the generated SSH configuration (run from `ansible/`):
+
+```bash
+ssh -F .generated/ssh_config -N -o ExitOnForwardFailure=yes \
+  -L 127.0.0.1:3000:<grafana-private-ip>:3000 tassadar-bastion
+```
+
+Open `http://127.0.0.1:3000` while the tunnel runs. Replace the placeholder
+with `monitoring_private_ips["grafana-1"]`. A future public HTTPS endpoint
+requires a separate TLS and authentication configuration.
 
 ## Configuration
 
@@ -93,9 +147,6 @@ Useful checks:
 
 ```bash
 ansible-playbook playbooks/pxc.yml --tags verify
-
-ansible pxc -b -m shell -a \
-  "MYSQL_PWD='$(cat .generated/pxc_root_password)' mysql --user=root --batch --skip-column-names --execute=\"SHOW STATUS LIKE 'wsrep_cluster_size';\""
 ```
 
 The expected cluster size is `3` on every PXC node.
@@ -119,12 +170,12 @@ OpenTofu and Ansible run on GitHub-hosted runners. OpenTofu accesses
 DigitalOcean/Spaces, and Ansible connects through the bastion. See the
 [controller inventory instructions](ansible/README.md#controller-inventory).
 Inventory preparation and the manual main-infrastructure plan/apply workflow
-are available. PXC deployment/recovery workflows and monitoring remain
-planned. No cloud resources are created by inventory preparation.
+are available. Monitoring VM definitions and local Node Exporter/Prometheus
+service playbooks plus Grafana provisioning are included. MySQL Exporter and service workflows
+remain planned. No cloud resources are created by inventory preparation.
 
-The older [bootstrap project](bootstrap/README.md) and its provisioning
-workflow are retained as legacy tools. The manager readiness workflow has
-been removed. A management VM is not required by this architecture.
+Use **Manage infrastructure** to provision the environment. OpenTofu and
+Ansible run on GitHub-hosted runners; no management VM is required.
 
 ## GitHub Actions
 
@@ -143,9 +194,8 @@ Settings > Secrets and variables > Actions, configure:
 
 Use the contents of the matching `.pub` file for `INFRA_SSH_PUBLIC_KEY`, for
 example `~/.ssh/id_tassadar.pub`. Keep the full key line consistent with the
-registered DigitalOcean key. The bootstrap variable `BOOTSTRAP_SSH_KEY_ID`
-belongs to the legacy manager module and is not used here. No private SSH key
-or MySQL password is required by this workflow.
+registered DigitalOcean key. No private SSH key or MySQL password is required
+by this workflow.
 
 Choose **Actions > Manage infrastructure > Run workflow**:
 
@@ -156,9 +206,9 @@ Choose **Actions > Manage infrastructure > Run workflow**:
   by the plan. It does not reuse a plan from an earlier workflow run.
 
 The workflow operates on the main `tofu/` configuration: bastion, PXC and
-FlowerCA Droplets, PXC data volumes, firewalls, and related resources. It does
-not create a manager VM, install MySQL, bootstrap PXC, or deploy the FlowerCA
-application. Infrastructure apply completion does not mean services are ready.
+FlowerCA/Prometheus/Grafana Droplets, PXC data volumes, firewalls, and related resources. It does
+not create a manager VM, install MySQL/Prometheus/Grafana, bootstrap PXC, or
+deploy the FlowerCA application. Infrastructure apply completion does not mean services are ready.
 
 Deployment credentials are scoped to runtime configuration checks, backend
 initialization, planning, and apply. Checkout, tool installation, formatting, validation,
@@ -183,5 +233,5 @@ configuration and the saved plan are removed after the operation; they are
 not uploaded as artifacts. Canceling or failing an apply does not undo cloud
 changes. Inspect the state and resources before retrying or deleting anything.
 
-Workflow code is locally validated. A real GitHub/DigitalOcean/Spaces run
-remains unverified until it is published, configured, and executed.
+A successful workflow confirms the requested infrastructure operation.
+Service readiness requires the Ansible cluster health and data checks.

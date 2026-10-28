@@ -1,0 +1,13 @@
+---
+- name: Wait for Grafana and its database to be ready
+  ansible.builtin.uri:
+    url: http://{{ grafana_address }}:3000/api/health
+    use_proxy: false
+    return_content: true
+  register: grafana_health
+  changed_when: false
+  until:
+  - grafana_health.status | default(0) == 200
+  - grafana_health.json.database | default('') == 'ok'
+  retries: '{{ grafana_verify_retries }}'
+  delay: '{{ grafana_verify_delay }}'

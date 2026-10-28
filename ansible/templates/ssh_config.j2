@@ -2,7 +2,7 @@
 Host tassadar-bastion
     HostName {{ inventory_bastion_ip }}
 
-Host {{ ((inventory_pxc_hosts.values() | list) + [inventory_flowerca_ip]) | join(' ') }}
+Host {{ ((inventory_pxc_hosts.values() | list) + [inventory_flowerca_ip] + (inventory_monitoring_hosts.values() | list)) | join(' ') }}
     ProxyJump tassadar-bastion
 
 Host *

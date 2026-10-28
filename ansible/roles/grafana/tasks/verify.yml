@@ -1,0 +1,92 @@
+---
+- name: Require the current Grafana administrator password
+  ansible.builtin.import_tasks: credentials.yml
+
+- name: Wait for Grafana readiness
+  ansible.builtin.import_tasks: ready.yml
+
+- name: Verify the current administrator
+  ansible.builtin.import_tasks: authenticate.yml
+
+- name: Verify authenticated Grafana integration
+  block:
+    - name: Verify the provisioned Prometheus data source
+      ansible.builtin.uri:
+        url: "http://{{ grafana_address }}:3000/api/datasources/uid/tassadar-prometheus"
+        url_username: admin
+        url_password: "{{ grafana_admin_password }}"
+        force_basic_auth: true
+        use_proxy: false
+        return_content: true
+      register: grafana_datasource
+      changed_when: false
+      until:
+        - grafana_datasource.status | default(0) == 200
+        - grafana_datasource.json.type | default('') == 'prometheus'
+        - grafana_datasource.json.url | default('') == 'http://' ~ grafana_prometheus_address ~ ':9090'
+        - grafana_datasource.json.access | default('') == 'proxy'
+        - grafana_datasource.json.isDefault | default(false) | bool
+        - grafana_datasource.json.readOnly | default(false) | bool
+      retries: "{{ grafana_verify_retries }}"
+      delay: "{{ grafana_verify_delay }}"
+
+    - name: Verify Grafana can reach Prometheus
+      ansible.builtin.uri:
+        url: "http://{{ grafana_address }}:3000/api/datasources/uid/tassadar-prometheus/health"
+        url_username: admin
+        url_password: "{{ grafana_admin_password }}"
+        force_basic_auth: true
+        use_proxy: false
+        return_content: true
+      register: grafana_datasource_health
+      changed_when: false
+      until:
+        - grafana_datasource_health.status | default(0) == 200
+        - grafana_datasource_health.json.status | default('') == 'OK'
+      retries: "{{ grafana_verify_retries }}"
+      delay: "{{ grafana_verify_delay }}"
+
+    - name: Require live exporters and host metrics through the Grafana data proxy
+      ansible.builtin.uri:
+        url: >-
+          http://{{ grafana_address }}:3000/api/datasources/proxy/uid/tassadar-prometheus/api/v1/query?query={{ item | urlencode }}
+        url_username: admin
+        url_password: "{{ grafana_admin_password }}"
+        force_basic_auth: true
+        use_proxy: false
+        return_content: true
+      loop:
+        - 'up{job="node"}'
+        - 'count by(instance) (node_uname_info{job="node"})'
+      register: grafana_host_metrics
+      changed_when: false
+      until:
+        - grafana_host_metrics.status | default(0) == 200
+        - grafana_host_metrics.json.status | default('') == 'success'
+        - >-
+          (grafana_host_metrics.json.data.result | default([])
+           | map(attribute='metric.instance') | sort | list)
+          == (groups['node_exporter'] | sort)
+        - >-
+          (grafana_host_metrics.json.data.result | default([])
+           | map(attribute='value') | map('last') | unique | list) == ['1']
+      retries: "{{ grafana_verify_retries }}"
+      delay: "{{ grafana_verify_delay }}"
+
+    - name: Verify the managed VM dashboard is loaded
+      ansible.builtin.uri:
+        url: "http://{{ grafana_address }}:3000/api/dashboards/uid/tassadar-nodes"
+        url_username: admin
+        url_password: "{{ grafana_admin_password }}"
+        force_basic_auth: true
+        use_proxy: false
+        return_content: true
+      register: grafana_dashboard
+      changed_when: false
+      until:
+        - grafana_dashboard.status | default(0) == 200
+        - grafana_dashboard.json.dashboard.uid | default('') == 'tassadar-nodes'
+        - grafana_dashboard.json.meta.provisioned | default(false) | bool
+      retries: "{{ grafana_verify_retries }}"
+      delay: "{{ grafana_verify_delay }}"
+  no_log: true

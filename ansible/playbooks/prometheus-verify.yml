@@ -1,0 +1,9 @@
+---
+- name: Verify Prometheus and collected host metrics without reinstalling
+  hosts: prometheus
+  gather_facts: false
+  tasks:
+    - name: Run shared Prometheus verification
+      ansible.builtin.import_role:
+        name: prometheus
+        tasks_from: verify

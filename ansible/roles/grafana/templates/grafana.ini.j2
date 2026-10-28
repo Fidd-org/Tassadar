@@ -1,0 +1,46 @@
+# Managed by Ansible.
+[paths]
+data = /var/lib/grafana
+logs = /var/lib/grafana/log
+plugins = /var/lib/grafana/plugins
+provisioning = /etc/grafana/provisioning
+
+[server]
+protocol = http
+http_addr = {{ grafana_address }}
+http_port = 3000
+domain = localhost
+root_url = http://localhost:3000/
+
+[database]
+type = sqlite3
+
+[security]
+admin_user = admin
+disable_initial_admin_creation = {{ (not (grafana_bootstrap_admin | default(false) | bool)) | lower }}
+{% if grafana_bootstrap_admin | default(false) | bool %}
+admin_password = $__file{/run/tassadar-grafana/admin-password}
+{% endif %}
+secret_key = $__file{/etc/grafana/secret-key}
+disable_gravatar = true
+cookie_httponly = true
+cookie_samesite = lax
+
+[users]
+allow_sign_up = false
+allow_org_create = false
+
+[auth.anonymous]
+enabled = false
+
+[analytics]
+reporting_enabled = false
+check_for_updates = false
+check_for_plugin_updates = false
+
+[plugins]
+preinstall_disabled = true
+
+[log]
+mode = console
+level = info

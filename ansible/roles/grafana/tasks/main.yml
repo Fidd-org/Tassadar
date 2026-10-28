@@ -1,0 +1,246 @@
+---
+- name: Validate Grafana platform and inventory
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.distribution == 'Ubuntu'
+      - ansible_facts.distribution_major_version == '24'
+      - ansible_facts.architecture == 'x86_64'
+      - ansible_facts.service_mgr == 'systemd'
+      - groups['grafana'] | default([]) | length == 1
+      - groups['prometheus'] | default([]) | length == 1
+      - groups['node_exporter'] | default([]) | length > 0
+      - grafana_version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
+      - grafana_archive_url is match('^https://dl\.grafana\.com/')
+      - grafana_checksum is match('^sha256:[a-f0-9]{64}$')
+      - grafana_address is match('^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)')
+      - grafana_address in ansible_facts.all_ipv4_addresses
+      - grafana_prometheus_address is match('^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)')
+    fail_msg: Grafana requires Ubuntu 24.04 amd64/systemd and the complete monitoring inventory.
+
+- name: Require the current Grafana administrator password
+  ansible.builtin.import_tasks: credentials.yml
+
+- name: Wait for cloud-init before package operations
+  ansible.builtin.command: cloud-init status --wait
+  changed_when: false
+
+- name: Install release extraction prerequisites
+  ansible.builtin.apt:
+    name: [ca-certificates, tar]
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Create the Grafana service group
+  ansible.builtin.group:
+    name: grafana
+    system: true
+
+- name: Create the unprivileged Grafana user
+  ansible.builtin.user:
+    name: grafana
+    group: grafana
+    system: true
+    create_home: false
+    home: /var/lib/grafana
+    shell: /usr/sbin/nologin
+
+- name: Create root-owned release directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /var/cache/tassadar
+    - /opt/tassadar
+
+- name: Create root-owned Grafana configuration directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: grafana
+    mode: "0750"
+  loop:
+    - /etc/grafana
+    - /etc/grafana/provisioning
+    - /etc/grafana/provisioning/datasources
+    - /etc/grafana/provisioning/dashboards
+    - /etc/grafana/dashboards
+    - /run/tassadar-grafana
+
+- name: Create Grafana data directories without resetting existing data
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: grafana
+    group: grafana
+    mode: "0750"
+  loop:
+    - /var/lib/grafana
+    - /var/lib/grafana/plugins
+
+- name: Create the stable encryption key only when missing
+  ansible.builtin.copy:
+    content: "{{ lookup('ansible.builtin.password', '/dev/null length=64 chars=ascii_letters,digits') }}"
+    dest: /etc/grafana/secret-key
+    force: false
+    owner: root
+    group: grafana
+    mode: "0640"
+  no_log: true
+  diff: false
+
+- name: Download the pinned Grafana OSS archive
+  ansible.builtin.get_url:
+    url: "{{ grafana_archive_url }}"
+    dest: "/var/cache/tassadar/grafana-{{ grafana_version }}.linux-amd64.tar.gz"
+    checksum: "{{ grafana_checksum }}"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Create the versioned Grafana installation directory
+  ansible.builtin.file:
+    path: "/opt/tassadar/grafana-{{ grafana_version }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Extract the verified Grafana release
+  ansible.builtin.unarchive:
+    src: "/var/cache/tassadar/grafana-{{ grafana_version }}.linux-amd64.tar.gz"
+    dest: "/opt/tassadar/grafana-{{ grafana_version }}"
+    remote_src: true
+    extra_opts: [--strip-components=1]
+    creates: "/opt/tassadar/grafana-{{ grafana_version }}/bin/grafana"
+    owner: root
+    group: root
+
+- name: Provision the Prometheus data source
+  ansible.builtin.template:
+    src: prometheus.yml.j2
+    dest: /etc/grafana/provisioning/datasources/prometheus.yml
+    owner: root
+    group: grafana
+    mode: "0640"
+  notify: Restart Grafana
+
+- name: Provision the dashboard provider
+  ansible.builtin.copy:
+    src: dashboards.yml
+    dest: /etc/grafana/provisioning/dashboards/tassadar.yml
+    owner: root
+    group: grafana
+    mode: "0640"
+  notify: Restart Grafana
+
+- name: Install the managed VM dashboard
+  ansible.builtin.copy:
+    src: tassadar-nodes.json
+    dest: /etc/grafana/dashboards/tassadar-nodes.json
+    owner: root
+    group: grafana
+    mode: "0640"
+  notify: Restart Grafana
+
+- name: Configure the Grafana systemd service
+  ansible.builtin.template:
+    src: grafana.service.j2
+    dest: /etc/systemd/system/grafana.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart Grafana
+
+- name: Inspect existing Grafana initialization state
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    get_checksum: false
+    get_mime: false
+  loop:
+    - /var/lib/grafana/grafana.db
+    - /etc/grafana/.admin-initialized
+  register: grafana_initialization
+
+- name: Determine whether administrator initialization is needed
+  ansible.builtin.set_fact:
+    grafana_needs_admin_bootstrap: >-
+      {{ not grafana_initialization.results[0].stat.exists
+         or not grafana_initialization.results[1].stat.exists }}
+
+- name: Initialize Grafana with a temporary administrator credential
+  block:
+    - name: Write the bootstrap password into the runtime directory
+      ansible.builtin.copy:
+        content: "{{ grafana_admin_password }}"
+        dest: /run/tassadar-grafana/admin-password
+        owner: root
+        group: grafana
+        mode: "0640"
+      when: grafana_needs_admin_bootstrap | bool
+      no_log: true
+      diff: false
+
+    - name: Configure Grafana for this startup
+      ansible.builtin.template:
+        src: grafana.ini.j2
+        dest: /etc/grafana/grafana.ini
+        owner: root
+        group: grafana
+        mode: "0640"
+      vars:
+        grafana_bootstrap_admin: "{{ grafana_needs_admin_bootstrap }}"
+      notify: Restart Grafana
+
+    - name: Apply pending Grafana changes
+      ansible.builtin.meta: flush_handlers
+
+    - name: Enable and start Grafana
+      ansible.builtin.systemd_service:
+        name: grafana
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Wait for Grafana readiness before authentication
+      ansible.builtin.import_tasks: ready.yml
+
+    - name: Verify the supplied administrator once Grafana is ready
+      ansible.builtin.import_tasks: authenticate.yml
+
+    - name: Record successful administrator initialization
+      ansible.builtin.copy:
+        content: "Administrator initialization verified.\n"
+        dest: /etc/grafana/.admin-initialized
+        owner: root
+        group: root
+        mode: "0600"
+        force: false
+
+  always:
+    - name: Remove the temporary administrator password
+      ansible.builtin.file:
+        path: /run/tassadar-grafana/admin-password
+        state: absent
+      no_log: true
+
+    - name: Disable automatic admin creation and remove the password provider
+      ansible.builtin.template:
+        src: grafana.ini.j2
+        dest: /etc/grafana/grafana.ini
+        owner: root
+        group: grafana
+        mode: "0640"
+      vars:
+        grafana_bootstrap_admin: false
+      notify: Restart Grafana
+
+    - name: Apply final Grafana configuration
+      ansible.builtin.meta: flush_handlers
+
+- name: Verify Grafana and queries through its Prometheus data source
+  ansible.builtin.import_tasks: verify.yml
