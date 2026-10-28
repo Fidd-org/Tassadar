@@ -1,0 +1,62 @@
+---
+- name: Validate the complete controller inventory before opening SSH
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Record the expected Tassadar host set
+      ansible.builtin.set_fact:
+        connectivity_expected_hosts:
+          - flowerca-1
+          - grafana-1
+          - prometheus-1
+          - pxc-1
+          - pxc-2
+          - pxc-3
+          - pxc-bastion
+
+    - name: Require every expected host and role group
+      ansible.builtin.assert:
+        that:
+          - groups.get('all', []) | sort == connectivity_expected_hosts
+          - groups.get('bastion', []) == ['pxc-bastion']
+          - groups.get('pxc', []) | sort == ['pxc-1', 'pxc-2', 'pxc-3']
+          - groups.get('flowerca', []) == ['flowerca-1']
+          - groups.get('prometheus', []) == ['prometheus-1']
+          - groups.get('grafana', []) == ['grafana-1']
+          - groups.get('node_exporter', []) | sort == connectivity_expected_hosts
+        fail_msg: Regenerate the complete Tassadar inventory; all seven managed hosts and groups are required.
+
+- name: Check SSH authentication and Python on every managed VM
+  hosts: all
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: Refuse a partial host selection
+      ansible.builtin.assert:
+        that:
+          - >-
+            (ansible_play_hosts_all | sort)
+            == (hostvars['localhost'].connectivity_expected_hosts | default([]) | sort)
+        fail_msg: Connectivity must check the complete expected host set.
+      run_once: true
+
+    - name: Wait for SSH and Python after provisioning
+      ansible.builtin.wait_for_connection:
+        timeout: "{{ connectivity_wait_timeout | default(300) }}"
+        connect_timeout: 10
+        sleep: 5
+
+    - name: Check the Ansible connection
+      ansible.builtin.ping:
+
+    - name: Record successful connectivity only after all pings finish
+      ansible.builtin.copy:
+        content: "{{ ansible_play_hosts_all | sort | to_json }}"
+        dest: "{{ connectivity_summary_path }}"
+        mode: "0600"
+      when: connectivity_summary_path | default('') | length > 0
+      delegate_to: localhost
+      connection: local
+      run_once: true

@@ -6,6 +6,7 @@
   vars:
     inventory_tofu_directory: "{{ playbook_dir }}/../../tofu"
     inventory_tofu_binary: tofu
+    inventory_host_key_checking: "yes"
     inventory_output_path: "{{ playbook_dir }}/../inventory.yml"
     inventory_ssh_config_path: "{{ playbook_dir }}/../.generated/ssh_config"
     inventory_ipv4_pattern: '^(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$'
@@ -17,8 +18,14 @@
           - inventory_known_hosts_path | default('') | length > 0
         fail_msg: >-
           Set inventory_ssh_private_key_path and inventory_known_hosts_path.
-          The known_hosts file must contain independently verified keys for
-          the bastion and every managed node.
+          The known_hosts file must exist; yes mode requires pinned keys,
+          while accept-new learns keys during the first SSH connection.
+
+    - name: Require a supported SSH host key policy
+      ansible.builtin.assert:
+        that:
+          - inventory_host_key_checking in ['yes', 'accept-new']
+        fail_msg: Use yes for pinned keys or accept-new to trust the first connection.
 
     - name: Resolve paths on the current controller
       ansible.builtin.set_fact:
@@ -155,6 +162,7 @@
           - "{{ inventory_hosts_file }}"
       loop: "{{ inventory_target_ips }}"
       register: inventory_host_keys
+      when: inventory_host_key_checking == 'yes'
       changed_when: false
       failed_when: false
       no_log: true
@@ -168,7 +176,8 @@
           {{ inventory_host_keys.results | rejectattr('rc', 'equalto', 0)
              | map(attribute='item') | join(', ') }}.
           Verify the keys using a trusted channel and update known_hosts.
-          No keys are collected or trusted automatically.
+          No keys are collected or trusted automatically in yes mode.
+      when: inventory_host_key_checking == 'yes'
 
     - name: Create the generated SSH configuration directory
       ansible.builtin.file:
@@ -176,7 +185,7 @@
         state: directory
         mode: "0700"
 
-    - name: Render strict SSH access through the bastion
+    - name: Render SSH access through the bastion
       ansible.builtin.template:
         src: ../templates/ssh_config.j2
         dest: "{{ inventory_config_file }}"

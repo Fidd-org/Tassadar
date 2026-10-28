@@ -15,12 +15,21 @@ run plan/apply. Supply a private key with mode 0600 (or stricter) and verified
 known_hosts entries for the bastion public IP and all managed private IPs.
 SSH checks host keys on both hops and keeps private keys on the controller.
 
+The local default is inventory_host_key_checking=yes with pinned keys.
+CI explicitly sets inventory_host_key_checking=accept-new and uses a fresh,
+empty controller file; SSH learns the first key automatically. Changed keys
+are rejected while that file exists. Trust does not persist across runners.
+There is no ANSIBLE_KNOWN_HOSTS GitHub Secret. For the same local policy,
+supply -e inventory_host_key_checking=accept-new and an existing writable
+known_hosts file; its entries remain usable between local runs.
+Only yes and accept-new are allowed; unchecked no/off modes are rejected.
+
 Required outputs are `bastion_public_ip`, `bastion_private_ip`,
 `pxc_private_ips`, `flowerca_private_ip`, and `monitoring_private_ips`. Apply the monitoring
 infrastructure before regenerating inventory from an older state. The
 monitoring map must contain exactly `prometheus-1` and `grafana-1`; verified
 host keys are required for both private IPs. The resulting groups are
-`prometheus` and `grafana` under `monitoring`. Both use the same strict
+`prometheus` and `grafana` under `monitoring`. Both use the same
 ProxyJump configuration as PXC. Node Exporter, Prometheus and Grafana playbooks are
 covered in [monitoring.md](monitoring.md).
 
@@ -36,6 +45,25 @@ The former Terraform-generated `inventory.ini` is no longer selected by
 default. On the next approved apply, a `removed` block forgets the old
 `local_file.ansible_inventory` state entry without deleting the old local file.
 The default inventory is now `inventory.yml`.
+
+# Connectivity check
+
+After preparing the complete inventory, run:
+
+```bash
+ansible-playbook playbooks/check-connectivity.yml
+```
+
+It requires all seven expected hosts and role groups, waits for SSH/Python
+(up to 300 seconds per host), then runs Ansible ping on every VM. Empty/partial inventory, partial host selection, unavailable SSH
+or missing Python fail the check. No services or packages are installed.
+GitHub Actions exposes the same check operation with controller-only temporary
+keys and inventory; the current CI version is pinned in requirements.txt.
+Apply runs the same check internally before mandatory monitoring deployment.
+A separate check run is optional diagnostics. The local-only
+check-monitoring-credentials.yml reuses Grafana password validation before
+cloud changes. See [monitoring deployment](monitoring.md#github-deployment).
+Local fixtures validate inventory/Ansible behaviour, not real SSH reachability.
 
 # playbooks/pxc.yml
 

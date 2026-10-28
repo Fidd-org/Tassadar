@@ -11,7 +11,8 @@ Host *
     IdentitiesOnly yes
     IdentityAgent none
     BatchMode yes
-    StrictHostKeyChecking yes
+    StrictHostKeyChecking {{ inventory_host_key_checking }}
+    UpdateHostKeys no
     UserKnownHostsFile "{{ inventory_hosts_file }}"
     GlobalKnownHostsFile /dev/null
     ForwardAgent no

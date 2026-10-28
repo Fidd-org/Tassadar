@@ -4,7 +4,32 @@ Infrastructure is defined in ../tofu/. These playbooks install services only;
 they do not create Droplets, register GitHub jobs, bootstrap PXC, or install
 MySQL Exporter.
 
-## Run
+## GitHub deployment
+
+Manage infrastructure with operation apply provisions resources and then runs
+SSH/Python checks, node-exporter.yml, prometheus.yml, grafana.yml and the shared
+prometheus-verify.yml/grafana-verify.yml checks in the same job. No separate
+manual monitoring workflow is required. Plan previews resources only; check
+tests connectivity on existing VMs and does not install services.
+
+Set ANSIBLE_SSH_PRIVATE_KEY and GRAFANA_ADMIN_PASSWORD in GitHub Secrets,
+with the matching INFRA_SSH_PUBLIC_KEY Variable. Before cloud changes, the
+workflow checks the SSH identity and runs check-monitoring-credentials.yml.
+The latter imports only the existing Grafana credential validation tasks on
+localhost; it does not connect to a VM or install Grafana.
+
+New VMs may need time to start SSH/Python. Connectivity waits up to 300 seconds
+per host before failing (connectivity_wait_timeout can override the timeout).
+Each role also waits for cloud-init before package operations. CI uses the
+accept-new policy described below. Grafana receives its password only during
+credential validation, deployment and final verification.
+
+The Summary reports each stage. A failed service check fails the deployment
+even if OpenTofu succeeded. Existing resources/data are kept for repair;
+fix the cause and rerun apply. Cancellation is not rollback, and interrupted
+Ansible runs may need cleanup as described under credentials below.
+
+## Local run
 
 Apply the infrastructure first, verify its SSH host keys, and prepare inventory
 as described in [README.md](README.md#controller-inventory). From ansible/:
@@ -40,7 +65,9 @@ SSH reaches bastion through its public IP. Its separate node_exporter_address
 comes from the bastion_private_ip OpenTofu output. All other exporters default
 to ansible_host, which is already a private IP. The generator reads five named
 outputs and validates the extra bastion address without requiring a second
-known_hosts entry for it: SSH still connects to the public address.
+known_hosts entry for it: SSH still connects to the public address. CI uses a temporary, initially empty
+known_hosts with accept-new; local pinned mode remains the default.
+See [controller inventory](README.md#controller-inventory) for both policies.
 
 Both roles require Ubuntu 24.04 amd64, systemd and an assigned RFC1918 bind IP.
 Node Exporter listens on that address at 9100; Prometheus listens on its
@@ -110,7 +137,7 @@ or repeated-run idempotence on Ubuntu Droplets.
 
 The next database step is a dedicated MySQL Exporter on every PXC node plus
 a least-privilege database account, after PXC is healthy. Database dashboards,
-notifications and GitHub service workflows remain separate tasks.
+notifications and PXC service workflows remain separate tasks.
 
 ## Grafana
 
@@ -127,8 +154,9 @@ Use a strong password of at least 20 characters, without leading/trailing
 whitespace or line breaks. The role also accepts grafana_admin_password from
 a protected Ansible variable (for example, an encrypted extra-vars file).
 Do not put a literal password in a shell command, inventory or committed file.
-Future CI must supply GRAFANA_ADMIN_PASSWORD from GitHub Secrets only to the
-needed Ansible step. No GitHub service workflow is implemented yet.
+GitHub Actions supplies GRAFANA_ADMIN_PASSWORD only to credential preflight
+and the Grafana deployment/verification steps. It is not stored in the
+inventory, command arguments, OpenTofu state or a controller password file.
 
 The Grafana role installs pinned Grafana OSS 13.2.4 with SHA-256 verification,
 creates an unprivileged service user, and configures systemd. The archive URL,
