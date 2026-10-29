@@ -66,10 +66,14 @@ Open **Actions → Manage infrastructure → Run workflow** on the default branc
 | `plan` | Preview infrastructure changes without applying them |
 | `apply` | Apply a fresh plan, deploy monitoring and verify it |
 | `check` | Check SSH/Python access to all seven existing VMs |
+| `destroy-plan` | Preview full infrastructure deletion without applying it |
+| `destroy` | Apply a fresh destroy plan and verify the remote state is empty |
 
 Start with `plan`, review its output, then run `apply`.
 Plan needs no private SSH key or Grafana password; check needs no Grafana
-password or DigitalOcean token.
+password or DigitalOcean token. Both destroy operations use the DigitalOcean
+token, Spaces credentials and public-key Variable; no private SSH key or
+Grafana password is needed.
 
 Apply runs this sequence:
 
@@ -77,13 +81,24 @@ Apply runs this sequence:
 
 Check the run's **Summary** for each stage. Apply succeeds only after all
 expected targets and host metrics, the Grafana datasource and dashboard pass
-verification. A failed or canceled run does not roll back changes or delete
-resources; inspect the failure, fix the cause and rerun.
+verification. A failed or canceled deploy does not roll back changes or
+clean up resources automatically; inspect the failure, fix the cause and rerun.
 
-The integrated workflow is locally validated; its first full cloud deployment
-and repeated-run verification are still pending.
+Initial deployment through GitHub Actions succeeded; repeated-run verification
+is still pending.
 
-## Local commands and deletion
+## Delete from GitHub
+
+Run `destroy-plan` and review its output. Then run `destroy` with
+`destroy_confirmation` set to `DESTROY`. Destroy creates a fresh plan in its
+own run; it does not reuse the earlier preview. Operations use the same
+concurrency group, so apply and destroy cannot run together.
+
+Full destroy deletes the VMs, PXC data volumes and monitoring data.
+The existing Spaces bucket and default VPC are retained. A failed or canceled
+destroy can leave partial deletion; inspect the result before retrying.
+
+## Local commands
 
 Local use requires OpenTofu, Ansible and OpenSSH.
 Copy [tofu/secrets.auto.tfvars.example](tofu/secrets.auto.tfvars.example) to
@@ -92,7 +107,7 @@ for the default project. Supply Spaces credentials through
 `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` or a configured `AWS_PROFILE`.
 Keep credentials and generated files out of Git.
 
-Destroy is currently available locally:
+Local deletion is also available:
 
 ```bash
 cd tofu
@@ -100,9 +115,6 @@ tofu init
 tofu plan -destroy
 tofu destroy
 ```
-
-Full destroy deletes the VMs, PXC data volumes and monitoring data.
-The existing Spaces bucket and default VPC are retained.
 
 ## Detailed instructions
 

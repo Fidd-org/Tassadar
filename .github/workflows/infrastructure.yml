@@ -4,14 +4,21 @@ on:
   workflow_dispatch:
     inputs:
       operation:
-        description: Preview changes, deploy infrastructure with monitoring, or check VM connectivity
+        description: Plan, deploy, check connectivity, or destroy the main infrastructure
         type: choice
         options:
           - plan
           - apply
           - check
+          - destroy-plan
+          - destroy
         default: plan
         required: true
+      destroy_confirmation:
+        description: For destroy, type DESTROY to delete all VMs, PXC disks and monitoring data
+        type: string
+        default: ""
+        required: false
 
 permissions:
   contents: read
@@ -38,6 +45,22 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      - name: Validate the requested operation
+        id: request
+        env:
+          OPERATION: ${{ inputs.operation }}
+          DESTROY_CONFIRMATION: ${{ inputs.destroy_confirmation }}
+        run: |
+          set -euo pipefail
+          case "$OPERATION" in
+            plan|apply|check|destroy-plan|destroy) ;;
+            *) echo '::error::Unknown infrastructure operation'; exit 1 ;;
+          esac
+          if [[ "$OPERATION" == destroy && "$DESTROY_CONFIRMATION" != DESTROY ]]; then
+            echo '::error::Type DESTROY in destroy_confirmation to delete all VMs, PXC disks and monitoring data'
+            exit 1
+          fi
 
       - name: Install OpenTofu
         uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
@@ -69,8 +92,8 @@ jobs:
         run: |
           set -euo pipefail
           case "$OPERATION" in
-            plan|apply) ;;
-            *) echo '::error::Choose plan or apply'; exit 1 ;;
+            plan|apply|destroy-plan|destroy) ;;
+            *) echo '::error::Choose plan, apply, destroy-plan or destroy'; exit 1 ;;
           esac
           for required_name in TF_VAR_digitalocean_token AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY INFRA_SSH_PUBLIC_KEY; do
             if [[ -z "${!required_name}" ]]; then
@@ -147,6 +170,7 @@ jobs:
         id: plan
         if: inputs.operation != 'check'
         env:
+          OPERATION: ${{ inputs.operation }}
           TF_VAR_digitalocean_token: ${{ secrets.DIGITALOCEAN_TOKEN }}
           AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
@@ -154,8 +178,14 @@ jobs:
           set -euo pipefail
           umask 077
           runtime_directory="$RUNNER_TEMP/tassadar-infra"
+          plan_options=()
+          case "$OPERATION" in
+            plan|apply) ;;
+            destroy-plan|destroy) plan_options+=(-destroy) ;;
+            *) echo '::error::Unknown plan operation'; exit 1 ;;
+          esac
           set +e
-          tofu plan -input=false -no-color -detailed-exitcode -lock-timeout=5m \
+          tofu plan "${plan_options[@]}" -input=false -no-color -detailed-exitcode -lock-timeout=5m \
             -var-file="$runtime_directory/variables.tfvars.json" \
             -out="$runtime_directory/plan.tfplan"
           plan_exit=$?
@@ -166,8 +196,13 @@ jobs:
 
           # Only aggregate action counts leave this pipe; plan JSON can contain secrets.
           tofu show -json "$runtime_directory/plan.tfplan" |
-            jq -r '
-              [.resource_changes[]? | select(.mode == "managed") | .change.actions[]] as $actions |
+            jq -er --arg operation "$OPERATION" '
+              [.resource_changes[]? | select(.mode == "managed")] as $changes |
+              if ($operation == "destroy" or $operation == "destroy-plan") and
+                 any($changes[]; .change.actions != ["delete"] and .change.actions != ["no-op"])
+              then error("Destroy plan must contain only delete or no-op actions")
+              else $changes end |
+              [.[].change.actions[]] as $actions |
               "create=\($actions | map(select(. == "create")) | length)",
               "update=\($actions | map(select(. == "update")) | length)",
               "delete=\($actions | map(select(. == "delete")) | length)",
@@ -182,6 +217,30 @@ jobs:
           AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
         run: tofu apply -input=false -no-color -lock-timeout=5m "$RUNNER_TEMP/tassadar-infra/plan.tfplan"
+
+      - name: Destroy infrastructure using the fresh saved plan
+        id: destroy
+        if: inputs.operation == 'destroy'
+        env:
+          TF_VAR_digitalocean_token: ${{ secrets.DIGITALOCEAN_TOKEN }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+        run: tofu apply -input=false -no-color -lock-timeout=5m "$RUNNER_TEMP/tassadar-infra/plan.tfplan"
+
+      - name: Verify the remote state is empty after destroy
+        id: verify_destroy
+        if: inputs.operation == 'destroy'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          state_addresses="$(tofu state list)"
+          if [[ -n "$state_addresses" ]]; then
+            echo '::error::State is not empty after destroy; inspect the remaining resources before retrying'
+            exit 1
+          fi
+          echo 'state_empty=true' >> "$GITHUB_OUTPUT"
 
       - name: Prepare the current controller inventory
         id: inventory
@@ -290,6 +349,10 @@ jobs:
       - name: Report operation result
         if: always()
         env:
+          REQUEST_OUTCOME: ${{ steps.request.outcome }}
+          DESTROY_OUTCOME: ${{ steps.destroy.outcome }}
+          VERIFY_DESTROY_OUTCOME: ${{ steps.verify_destroy.outcome }}
+          STATE_EMPTY: ${{ steps.verify_destroy.outputs.state_empty }}
           ANSIBLE_OUTCOME: ${{ steps.ansible.outcome }}
           MONITORING_CREDENTIALS_OUTCOME: ${{ steps.monitoring_credentials.outcome }}
           NODE_EXPORTER_OUTCOME: ${{ steps.node_exporter.outcome }}
@@ -322,6 +385,7 @@ jobs:
             echo
             echo '| Step | Result |'
             echo '| --- | --- |'
+            echo "| Request validation | $REQUEST_OUTCOME |"
             echo "| Ansible installation | $ANSIBLE_OUTCOME |"
             echo "| Monitoring credentials preflight | $MONITORING_CREDENTIALS_OUTCOME |"
             echo "| Runtime configuration | $CONFIGURATION_OUTCOME |"
@@ -329,6 +393,8 @@ jobs:
             echo "| Configuration validation | $VALIDATION_OUTCOME |"
             echo "| Plan | $PLAN_OUTCOME |"
             echo "| Apply | $APPLY_OUTCOME |"
+            echo "| Destroy | $DESTROY_OUTCOME |"
+            echo "| Empty remote state verification | $VERIFY_DESTROY_OUTCOME |"
             echo "| SSH identity | $SSH_OUTCOME |"
             echo "| Inventory | $INVENTORY_OUTCOME |"
             echo "| SSH and Python connectivity | $CONNECTIVITY_OUTCOME |"
@@ -352,6 +418,16 @@ jobs:
             if [[ "$JOB_STATUS" == cancelled ]]; then
               echo '**Operation canceled.**'
               echo 'Cancellation does not roll back infrastructure or service changes. Inspect state and remote cleanup before retrying.'
+            elif [[ "$OPERATION" == destroy && "$REQUEST_OUTCOME" == success &&
+                    "$DESTROY_OUTCOME" == success && "$VERIFY_DESTROY_OUTCOME" == success &&
+                    "$STATE_EMPTY" == true && "$CLEANUP_SSH_OUTCOME" == success &&
+                    "$CLEANUP_INFRA_OUTCOME" == success ]]; then
+              echo '**Infrastructure destroyed; remote state is empty.**'
+              echo 'The existing Spaces backend and default VPC are retained.'
+            elif [[ "$OPERATION" == destroy-plan && "$PLAN_OUTCOME" == success &&
+                    "$CLEANUP_SSH_OUTCOME" == success && "$CLEANUP_INFRA_OUTCOME" == success ]]; then
+              echo '**Destroy plan completed. No resources were deleted.**'
+              echo 'To delete the infrastructure, run destroy with destroy_confirmation set to DESTROY.'
             elif [[ "$OPERATION" == check && "$CONNECTIVITY_OUTCOME" == success && "$CLEANUP_SSH_OUTCOME" == success && "$CLEANUP_INFRA_OUTCOME" == success ]]; then
               echo "**SSH and Python checks completed on $HOST_COUNT hosts.**"
               echo 'This does not verify database or monitoring service health.'
@@ -371,10 +447,21 @@ jobs:
               if [[ "$APPLY_OUTCOME" == success ]]; then
                 echo 'Infrastructure apply succeeded, but deployment or cleanup did not complete.'
               fi
-              echo 'An interrupted or failed deployment can leave partially changed infrastructure or services.'
-              echo 'Resources are retained; there is no automatic destroy or rollback. Inspect failures and rerun after fixing the cause.'
+              if [[ "$OPERATION" == destroy ]]; then
+                if [[ "$DESTROY_OUTCOME" == skipped || -z "$DESTROY_OUTCOME" ]]; then
+                  echo 'Destroy was not started; this run did not request deletion.'
+                else
+                  echo 'Deletion may be partial. Inspect state and resources, then rerun destroy after fixing the cause.'
+                fi
+              else
+                echo 'An interrupted or failed deployment can leave partially changed infrastructure or services.'
+                echo 'Resources are retained; there is no automatic destroy or rollback.'
+              fi
             fi
             echo
+            if [[ "$OPERATION" == destroy || "$OPERATION" == destroy-plan ]]; then
+              echo 'Full destroy deletes all managed VMs, PXC data volumes and monitoring data.'
+            fi
             echo 'The check operation does not create resources or install services.'
             echo 'PXC deployment/recovery and MySQL metrics are not part of this operation.'
           } >> "$GITHUB_STEP_SUMMARY"
