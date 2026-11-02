@@ -96,7 +96,9 @@ concurrency group, so apply and destroy cannot run together.
 
 Full destroy deletes the VMs, PXC data volumes and monitoring data.
 The existing Spaces bucket and default VPC are retained. A failed or canceled
-destroy can leave partial deletion; inspect the result before retrying.
+destroy can leave partial deletion. On failure, the workflow makes one retry
+with a fresh destroy plan; a second failure remains an error. Check the Summary
+for attempts and the final state verification.
 
 ## Local commands
 

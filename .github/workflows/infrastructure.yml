@@ -174,40 +174,7 @@ jobs:
           TF_VAR_digitalocean_token: ${{ secrets.DIGITALOCEAN_TOKEN }}
           AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
-        run: |
-          set -euo pipefail
-          umask 077
-          runtime_directory="$RUNNER_TEMP/tassadar-infra"
-          plan_options=()
-          case "$OPERATION" in
-            plan|apply) ;;
-            destroy-plan|destroy) plan_options+=(-destroy) ;;
-            *) echo '::error::Unknown plan operation'; exit 1 ;;
-          esac
-          set +e
-          tofu plan "${plan_options[@]}" -input=false -no-color -detailed-exitcode -lock-timeout=5m \
-            -var-file="$runtime_directory/variables.tfvars.json" \
-            -out="$runtime_directory/plan.tfplan"
-          plan_exit=$?
-          set -e
-          if [[ "$plan_exit" != 0 && "$plan_exit" != 2 ]]; then
-            exit "$plan_exit"
-          fi
-
-          # Only aggregate action counts leave this pipe; plan JSON can contain secrets.
-          tofu show -json "$runtime_directory/plan.tfplan" |
-            jq -er --arg operation "$OPERATION" '
-              [.resource_changes[]? | select(.mode == "managed")] as $changes |
-              if ($operation == "destroy" or $operation == "destroy-plan") and
-                 any($changes[]; .change.actions != ["delete"] and .change.actions != ["no-op"])
-              then error("Destroy plan must contain only delete or no-op actions")
-              else $changes end |
-              [.[].change.actions[]] as $actions |
-              "create=\($actions | map(select(. == "create")) | length)",
-              "update=\($actions | map(select(. == "update")) | length)",
-              "delete=\($actions | map(select(. == "delete")) | length)",
-              "forget=\($actions | map(select(. == "forget")) | length)"
-            ' >> "$GITHUB_OUTPUT"
+        run: bash ../.github/scripts/plan-infrastructure.sh
 
       - name: Apply infrastructure
         id: apply
@@ -225,7 +192,7 @@ jobs:
           TF_VAR_digitalocean_token: ${{ secrets.DIGITALOCEAN_TOKEN }}
           AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
-        run: tofu apply -input=false -no-color -lock-timeout=5m "$RUNNER_TEMP/tassadar-infra/plan.tfplan"
+        run: bash ../.github/scripts/destroy-infrastructure.sh
 
       - name: Verify the remote state is empty after destroy
         id: verify_destroy
@@ -351,6 +318,8 @@ jobs:
         env:
           REQUEST_OUTCOME: ${{ steps.request.outcome }}
           DESTROY_OUTCOME: ${{ steps.destroy.outcome }}
+          DESTROY_ATTEMPTS: ${{ steps.destroy.outputs.attempts }}
+          RETRY_DELETE_COUNT: ${{ steps.destroy.outputs.delete }}
           VERIFY_DESTROY_OUTCOME: ${{ steps.verify_destroy.outcome }}
           STATE_EMPTY: ${{ steps.verify_destroy.outputs.state_empty }}
           ANSIBLE_OUTCOME: ${{ steps.ansible.outcome }}
@@ -394,6 +363,12 @@ jobs:
             echo "| Plan | $PLAN_OUTCOME |"
             echo "| Apply | $APPLY_OUTCOME |"
             echo "| Destroy | $DESTROY_OUTCOME |"
+            if [[ -n "$DESTROY_ATTEMPTS" ]]; then
+              echo "| Destroy apply attempts | $DESTROY_ATTEMPTS |"
+            fi
+            if [[ -n "$RETRY_DELETE_COUNT" ]]; then
+              echo "| Remaining deletes in retry plan | $RETRY_DELETE_COUNT |"
+            fi
             echo "| Empty remote state verification | $VERIFY_DESTROY_OUTCOME |"
             echo "| SSH identity | $SSH_OUTCOME |"
             echo "| Inventory | $INVENTORY_OUTCOME |"
