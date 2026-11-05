@@ -1,7 +1,7 @@
 # Tassadar
 
 DigitalOcean infrastructure managed with OpenTofu and Ansible.
-GitHub Actions provisions the VMs and deploys host monitoring.
+GitHub Actions manages infrastructure with monitoring and deploys PXC separately.
 
 ## What is included
 
@@ -15,10 +15,10 @@ Ansible connects to private VM addresses through the bastion. Inventory is
 generated from state automatically. Grafana, Prometheus and exporters use
 private addresses; access the UI through an SSH tunnel.
 
-PXC installation, cluster verification and single-node recovery have separate
-Ansible playbooks. The current workflow deploys infrastructure and host
-monitoring; PXC installation, MySQL metrics and the FlowerCA application are
-separate steps.
+PXC uses native VM packages. Its deploy operation initializes three new nodes or verifies an
+already healthy cluster without bootstrapping it again. A partial cluster or
+existing inactive data stops deployment for diagnosis/recovery. MySQL Exporter,
+recovery automation and the FlowerCA application remain separate steps.
 
 ## Configuration
 
@@ -39,11 +39,14 @@ Before running the workflow:
 | `SPACES_SECRET_ACCESS_KEY` | Spaces secret key |
 | `ANSIBLE_SSH_PRIVATE_KEY` | Full automation private key, including BEGIN/END lines |
 | `GRAFANA_ADMIN_PASSWORD` | Current Grafana admin password, at least 20 characters |
+| `PXC_ROOT_PASSWORD` | Current MySQL root password, at least 20 characters |
 
 The private SSH key must match `INFRA_SSH_PUBLIC_KEY` and have no passphrase.
-Enter values without surrounding quotes. The Grafana password must have no
-line breaks or leading/trailing whitespace. Changing this Secret does not
-reset an existing Grafana password.
+Enter values without surrounding quotes. Passwords must have no line breaks
+or leading/trailing whitespace. Keep them stable between runs; changing a
+Secret does not reset an existing Grafana/MySQL password. PXC passwords must
+also contain no single quotes (`'`) or backslashes (`\`): the Percona package
+installer does not safely escape these characters during initialization.
 
 ### Variables
 
@@ -64,35 +67,56 @@ Open **Actions → Manage infrastructure → Run workflow** on the default branc
 | Operation | Result |
 | --- | --- |
 | `plan` | Preview infrastructure changes without applying them |
-| `apply` | Apply a fresh plan, deploy monitoring and verify it |
+| `apply` | Apply a fresh plan, install monitoring and verify it |
 | `check` | Check SSH/Python access to all seven existing VMs |
 | `destroy-plan` | Preview full infrastructure deletion without applying it |
 | `destroy` | Apply a fresh destroy plan and verify the remote state is empty |
 
-Start with `plan`, review its output, then run `apply`.
-Plan needs no private SSH key or Grafana password; check needs no Grafana
-password or DigitalOcean token. Both destroy operations use the DigitalOcean
+Start with `plan`, review its output, then run `apply`. Both reject deletion,
+replacement or removal from state of PXC data volumes. Full deletion is only
+available through the explicit destroy operations; this guard does not cover
+manual OpenTofu commands outside the workflow.
+Plan needs no private SSH key or service passwords; check needs no service
+passwords or DigitalOcean token. Both destroy operations use the DigitalOcean
 token, Spaces credentials and public-key Variable; no private SSH key or
-Grafana password is needed.
+service passwords are needed.
 
 Apply runs this sequence:
 
 `OpenTofu → inventory → SSH check → Node Exporter → Prometheus → Grafana → verification`
 
-Check the run's **Summary** for each stage. Apply succeeds only after all
-expected targets and host metrics, the Grafana datasource and dashboard pass
-verification. A failed or canceled deploy does not roll back changes or
-clean up resources automatically; inspect the failure, fix the cause and rerun.
+Check the run's **Summary** for each stage. Apply succeeds after host metrics
+and the Grafana datasource/dashboard are verified. It does not install PXC
+or require `PXC_ROOT_PASSWORD`. A failed or canceled deploy does not roll back
+changes or delete resources automatically.
 
-Initial deployment through GitHub Actions succeeded; repeated-run verification
-is still pending.
+## Deploy or verify PXC
+
+After infrastructure apply, open **Actions → Manage PXC → Run workflow**:
+
+| Operation | Result |
+| --- | --- |
+| `deploy` | Install/bootstrap three new nodes, or verify an existing healthy cluster |
+| `verify` | Check Galera health, cluster identity and cross-node writes/reads |
+
+Both initialize the existing S3 backend, read named state outputs, generate
+inventory and connect through the bastion. They never run infrastructure
+plan/apply/destroy. Required settings: Spaces credentials, `ANSIBLE_SSH_PRIVATE_KEY`,
+`INFRA_SSH_PUBLIC_KEY` and `PXC_ROOT_PASSWORD`; no DigitalOcean API token or
+Grafana password. Missing/empty state fails before remote service operations.
+Verify uses the dedicated `percona.example` test table and writes test records.
+Deploy already includes the same verification; recovery remains a manual playbook.
+
+Host monitoring was previously validated in GitHub. The separated PXC workflow
+and its first/repeated deployment still require a live cloud run.
 
 ## Delete from GitHub
 
 Run `destroy-plan` and review its output. Then run `destroy` with
 `destroy_confirmation` set to `DESTROY`. Destroy creates a fresh plan in its
 own run; it does not reuse the earlier preview. Operations use the same
-concurrency group, so apply and destroy cannot run together.
+concurrency group across both workflows, so infrastructure changes, PXC
+operations and destroy cannot run together.
 
 Full destroy deletes the VMs, PXC data volumes and monitoring data.
 The existing Spaces bucket and default VPC are retained. A failed or canceled

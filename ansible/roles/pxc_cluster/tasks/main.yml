@@ -12,6 +12,14 @@
     - cluster
     - verify
 
+- name: Require a fresh deployment decision before bootstrap
+  ansible.builtin.assert:
+    that:
+      - pxc_deployment_mode | default('') == 'fresh'
+    fail_msg: Run the complete deployment preflight; bootstrap is allowed only for three new empty nodes.
+  run_once: true
+  tags: [cluster]
+
 - name: Start bootstrap mysql service
   ansible.builtin.systemd:
     name: mysql@bootstrap.service
@@ -43,11 +51,11 @@
   register: pxc_bootstrap_wsrep_status
   changed_when: false
   until:
-    - "'wsrep_cluster_size\t1' in pxc_bootstrap_wsrep_status.stdout"
-    - "'wsrep_cluster_status\tPrimary' in pxc_bootstrap_wsrep_status.stdout"
-    - "'wsrep_local_state_comment\tSynced' in pxc_bootstrap_wsrep_status.stdout"
-    - "'wsrep_connected\tON' in pxc_bootstrap_wsrep_status.stdout"
-    - "'wsrep_ready\tON' in pxc_bootstrap_wsrep_status.stdout"
+    - "'wsrep_cluster_size\t1' in pxc_bootstrap_wsrep_status.stdout_lines"
+    - "'wsrep_cluster_status\tPrimary' in pxc_bootstrap_wsrep_status.stdout_lines"
+    - "'wsrep_local_state_comment\tSynced' in pxc_bootstrap_wsrep_status.stdout_lines"
+    - "'wsrep_connected\tON' in pxc_bootstrap_wsrep_status.stdout_lines"
+    - "'wsrep_ready\tON' in pxc_bootstrap_wsrep_status.stdout_lines"
   retries: 36
   delay: 5
   delegate_to: pxc-1
@@ -69,19 +77,17 @@
 
 - name: Join remaining PXC nodes
   ansible.builtin.include_tasks: join.yml
-  loop: "{{ groups['pxc'] | reject('equalto', 'pxc-1') | list }}"
+  loop: "{{ groups['pxc'] | reject('equalto', 'pxc-1') | sort }}"
   loop_control:
     loop_var: pxc_joiner
   run_once: true
   tags:
     - cluster
 
-- name: Verify cluster health and replication
-  ansible.builtin.include_role:
-    name: pxc_verify
-    apply:
-      tags:
-        - verify
+- name: Enable regular MySQL startup after the initial cluster is formed
+  ansible.builtin.systemd:
+    name: mysql
+    enabled: true
+  delegate_to: pxc-1
   run_once: true
-  tags:
-    - verify
+  tags: [cluster]

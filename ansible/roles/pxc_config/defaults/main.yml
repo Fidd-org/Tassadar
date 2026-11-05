@@ -17,8 +17,14 @@ pxc_tls_private_files:
   - server-key.pem
   - client-key.pem
 
-pxc_generated_password_dir: "{{ inventory_dir }}/.generated"
-pxc_root_password: "{{ pxc_root_password_override | default(lookup('password', pxc_generated_password_dir + '/pxc_root_password length=24 chars=ascii_letters,digits')) }}"
+pxc_generated_password_dir: "{{ inventory_dir | default(playbook_dir ~ '/..', true) }}/.generated"
+pxc_root_password: >-
+  {{ lookup('ansible.builtin.env', 'PXC_ROOT_PASSWORD')
+     if pxc_require_runtime_password | default(false) | bool
+     else (pxc_root_password_override if pxc_root_password_override is defined
+           else (lookup('ansible.builtin.env', 'PXC_ROOT_PASSWORD')
+                 if lookup('ansible.builtin.env', 'PXC_ROOT_PASSWORD') | length > 0
+                 else lookup('ansible.builtin.password', pxc_generated_password_dir ~ '/pxc_root_password length=24 chars=ascii_letters,digits'))) }}
 
 pxc_cluster_hosts: "{{ groups['pxc'] | default([]) }}"
 pxc_cluster_address: "gcomm://{{ pxc_cluster_hosts | map('extract', hostvars, 'ansible_host') | join(',') }}"

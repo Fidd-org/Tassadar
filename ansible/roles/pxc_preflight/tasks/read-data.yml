@@ -1,0 +1,48 @@
+---
+- name: List only top-level entries on the data filesystem
+  ansible.builtin.find:
+    paths: "{{ pxc_inspection_path }}"
+    file_type: any
+    hidden: true
+    recurse: false
+  register: pxc_data_listing
+
+- name: Require a complete data directory inspection
+  ansible.builtin.assert:
+    that:
+      - pxc_data_listing.skipped_paths | default({}) | length == 0
+    fail_msg: Cannot inspect the data filesystem; refusing to classify it as empty.
+
+- name: Inspect the ext4 recovery directory without following links
+  ansible.builtin.stat:
+    path: "{{ pxc_inspection_path }}/lost+found"
+    follow: false
+    get_checksum: false
+    get_mime: false
+  register: pxc_lost_found
+
+- name: Check for recovered files in lost+found
+  ansible.builtin.find:
+    paths: "{{ pxc_inspection_path }}/lost+found"
+    file_type: any
+    hidden: true
+    recurse: false
+  register: pxc_lost_found_listing
+  when: pxc_lost_found.stat.isdir | default(false)
+
+- name: Require a complete lost+found inspection
+  ansible.builtin.assert:
+    that:
+      - pxc_lost_found_listing.skipped_paths | default({}) | length == 0
+    fail_msg: Cannot inspect lost+found; refusing to classify the disk as empty.
+  when: pxc_lost_found.stat.isdir | default(false)
+
+- name: Record whether the data filesystem is genuinely empty
+  ansible.builtin.set_fact:
+    pxc_data_empty: >-
+      {{ pxc_data_listing.matched == 0
+         or (pxc_data_listing.matched == 1
+             and pxc_data_listing.files[0].path == pxc_inspection_path ~ '/lost+found'
+             and (pxc_lost_found.stat.isdir | default(false))
+             and not (pxc_lost_found.stat.islnk | default(false))
+             and (pxc_lost_found_listing.matched | default(-1)) == 0) }}

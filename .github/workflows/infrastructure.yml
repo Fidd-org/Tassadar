@@ -217,21 +217,7 @@ jobs:
           ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
           AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
-        run: |
-          set -euo pipefail
-          umask 077
-          runtime_directory="$RUNNER_TEMP/tassadar-ansible"
-          jq -n \
-            --arg key "$runtime_directory/identity" \
-            --arg hosts "$runtime_directory/known_hosts" \
-            --arg inventory "$runtime_directory/inventory.yml" \
-            --arg config "$runtime_directory/ssh_config" \
-            --arg summary "$runtime_directory/connectivity.json" \
-            '{inventory_ssh_private_key_path: $key, inventory_known_hosts_path: $hosts,
-              inventory_output_path: $inventory, inventory_ssh_config_path: $config,
-              connectivity_summary_path: $summary, inventory_host_key_checking: "accept-new"}' > "$runtime_directory/inventory-vars.json"
-          ansible-playbook -i localhost, playbooks/prepare-inventory.yml \
-            -e "@$runtime_directory/inventory-vars.json"
+        run: bash ../.github/scripts/prepare-ansible-inventory.sh
 
       - name: Check SSH and Python on every VM
         id: connectivity
@@ -302,16 +288,7 @@ jobs:
       - name: Remove controller SSH files and generated inventory
         id: cleanup_ssh
         if: always()
-        run: |
-          runtime_directory="$RUNNER_TEMP/tassadar-ansible"
-          if [[ -f "$runtime_directory/.owned-by-tassadar" ]]; then
-            rm -f -- "$runtime_directory/identity" "$runtime_directory/known_hosts" \
-              "$runtime_directory/identity.pub" "$runtime_directory/expected.pub" \
-              "$runtime_directory/inventory.yml" "$runtime_directory/ssh_config" \
-              "$runtime_directory/inventory-vars.json" "$runtime_directory/connectivity.json" \
-              "$runtime_directory/.owned-by-tassadar"
-            rmdir -- "$runtime_directory"
-          fi
+        run: bash ../.github/scripts/cleanup-ansible-ssh.sh
 
       - name: Report operation result
         if: always()
@@ -414,7 +391,7 @@ jobs:
                     "$VERIFY_PROMETHEUS_OUTCOME" == success && "$VERIFY_GRAFANA_OUTCOME" == success &&
                     "$CLEANUP_SSH_OUTCOME" == success && "$CLEANUP_INFRA_OUTCOME" == success ]]; then
               echo '**Infrastructure and monitoring deployment completed.**'
-              echo "SSH/Python checked on $HOST_COUNT hosts; all expected host metrics, the Grafana data source and dashboard verified."
+              echo "SSH/Python checked on $HOST_COUNT hosts; host metrics, the Grafana data source and dashboard verified."
             elif [[ "$OPERATION" == plan && "$PLAN_OUTCOME" == success && "$CLEANUP_SSH_OUTCOME" == success && "$CLEANUP_INFRA_OUTCOME" == success ]]; then
               echo '**Plan completed. Apply was not requested.**'
             else
@@ -438,5 +415,5 @@ jobs:
               echo 'Full destroy deletes all managed VMs, PXC data volumes and monitoring data.'
             fi
             echo 'The check operation does not create resources or install services.'
-            echo 'PXC deployment/recovery and MySQL metrics are not part of this operation.'
+            echo 'Use Manage PXC for database deployment/verification; recovery remains a separate manual playbook.'
           } >> "$GITHUB_STEP_SUMMARY"

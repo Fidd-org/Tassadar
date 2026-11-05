@@ -1,0 +1,107 @@
+---
+- name: Require the unmounted volume not to be in use elsewhere
+  ansible.builtin.command:
+    argv: [lsblk, --nodeps, --noheadings, --output, MOUNTPOINTS, "{{ pxc_data_device }}"]
+  register: pxc_other_mounts
+  changed_when: false
+
+- name: Refuse inspection of a volume mounted elsewhere
+  ansible.builtin.assert:
+    that:
+      - pxc_other_mounts.stdout | trim == ''
+    fail_msg: The PXC volume is mounted outside its expected data directory.
+
+- name: Inspect the inactive data mount point
+  ansible.builtin.stat:
+    path: "{{ pxc_mysql_datadir }}"
+    follow: false
+    get_checksum: false
+    get_mime: false
+  register: pxc_inactive_mount
+
+- name: Require a regular directory or absent mount point
+  ansible.builtin.assert:
+    that:
+      - not pxc_inactive_mount.stat.exists or (pxc_inactive_mount.stat.isdir | default(false))
+      - not (pxc_inactive_mount.stat.islnk | default(false))
+    fail_msg: The PXC data mount point is not a regular directory.
+
+- name: Inspect files outside the data volume before any mount
+  ansible.builtin.find:
+    paths: "{{ pxc_mysql_datadir }}"
+    file_type: any
+    hidden: true
+    recurse: false
+  register: pxc_root_data_listing
+  when: pxc_inactive_mount.stat.exists
+
+- name: Refuse to hide existing root-disk data with a new mount
+  ansible.builtin.assert:
+    that:
+      - pxc_root_data_listing.matched | default(0) == 0
+      - pxc_root_data_listing.skipped_paths | default({}) | length == 0
+    fail_msg: Files exist outside the PXC data volume, or inspection failed; refusing deployment.
+
+- name: Inspect the unmounted ext4 superblock
+  ansible.builtin.command:
+    argv: [dumpe2fs, -h, "{{ pxc_data_device }}"]
+  environment:
+    LC_ALL: C
+  register: pxc_unmounted_superblock
+  changed_when: false
+
+- name: Refuse a dirty filesystem or a journal requiring recovery
+  ansible.builtin.assert:
+    that:
+      - >-
+        pxc_unmounted_superblock.stdout_lines
+        | select('match', '^Filesystem state:\s+clean$') | list | length == 1
+      - >-
+        pxc_unmounted_superblock.stdout_lines
+        | select('search', 'needs_recovery') | list | length == 0
+    fail_msg: The unmounted PXC volume is not clean; inspect/recover it before deployment.
+
+- name: Allocate a private temporary mount point for inspection
+  ansible.builtin.tempfile:
+    path: /run
+    prefix: tassadar-pxc-inspect-
+    state: directory
+  register: pxc_inspection_directory
+
+- name: Inspect the unmounted ext4 volume without writing or replaying its journal
+  block:
+    - name: Mount the volume read-only without journal replay
+      ansible.builtin.command:
+        argv: [mount, -t, ext4, -o, "ro,noload", --, "{{ pxc_data_device }}", "{{ pxc_inspection_directory.path }}"]
+      changed_when: false
+
+    - name: Inspect the read-only data filesystem
+      ansible.builtin.include_tasks: read-data.yml
+      vars:
+        pxc_inspection_path: "{{ pxc_inspection_directory.path }}"
+  always:
+    - name: Check whether the inspection mount is still present
+      ansible.builtin.command:
+        argv: [findmnt, --noheadings, --mountpoint, "{{ pxc_inspection_directory.path }}"]
+      register: pxc_inspection_mount
+      changed_when: false
+      failed_when: pxc_inspection_mount.rc not in [0, 1]
+
+    - name: Unmount the inspection filesystem before removing its directory
+      ansible.builtin.command:
+        argv: [umount, --, "{{ pxc_inspection_directory.path }}"]
+      when: pxc_inspection_mount.rc == 0
+      changed_when: false
+
+    - name: Verify the inspection directory is unmounted before deletion
+      ansible.builtin.command:
+        argv: [findmnt, --noheadings, --mountpoint, "{{ pxc_inspection_directory.path }}"]
+      register: pxc_inspection_final_mount
+      changed_when: false
+      failed_when: pxc_inspection_final_mount.rc != 1
+
+    - name: Remove the now-unmounted inspection directory
+      ansible.builtin.file:
+        path: "{{ pxc_inspection_directory.path }}"
+        state: absent
+      when: pxc_inspection_final_mount.rc | default(-1) == 1

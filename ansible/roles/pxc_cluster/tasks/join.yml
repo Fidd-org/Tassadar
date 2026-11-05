@@ -41,10 +41,10 @@
   register: pxc_joiner_wsrep_status
   changed_when: false
   until:
-    - "'wsrep_cluster_size\t' ~ (pxc_joiner | regex_replace('^pxc-', '')) in pxc_joiner_wsrep_status.stdout"
-    - "'wsrep_cluster_status\tPrimary' in pxc_joiner_wsrep_status.stdout"
-    - "'wsrep_local_state_comment\tSynced' in pxc_joiner_wsrep_status.stdout"
-    - "'wsrep_ready\tON' in pxc_joiner_wsrep_status.stdout"
+    - "'wsrep_cluster_size\t' ~ (pxc_joiner | regex_replace('^pxc-', '')) in pxc_joiner_wsrep_status.stdout_lines"
+    - "'wsrep_cluster_status\tPrimary' in pxc_joiner_wsrep_status.stdout_lines"
+    - "'wsrep_local_state_comment\tSynced' in pxc_joiner_wsrep_status.stdout_lines"
+    - "'wsrep_ready\tON' in pxc_joiner_wsrep_status.stdout_lines"
   retries: 60
   delay: 5
   delegate_to: "{{ pxc_joiner }}"

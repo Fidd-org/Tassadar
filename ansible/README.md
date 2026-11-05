@@ -59,11 +59,26 @@ It requires all seven expected hosts and role groups, waits for SSH/Python
 or missing Python fail the check. No services or packages are installed.
 GitHub Actions exposes the same check operation with controller-only temporary
 keys and inventory; the current CI version is pinned in requirements.txt.
-Apply runs the same check internally before mandatory monitoring deployment.
+Infrastructure apply runs the same check before mandatory monitoring deployment.
+Manage PXC instead checks SSH/Python only on the three PXC nodes through the
+bastion; it does not require the monitoring VMs to be reachable.
 A separate check run is optional diagnostics. The local-only
 check-monitoring-credentials.yml reuses Grafana password validation before
 cloud changes. See [monitoring deployment](monitoring.md#github-deployment).
 Local fixtures validate inventory/Ansible behaviour, not real SSH reachability.
+
+# PXC from GitHub
+
+Run Manage infrastructure / apply first for resources and monitoring, then
+Manage PXC / deploy for the database. Manage PXC / verify checks an existing
+cluster, including test writes to percona.example. Deploy includes verification.
+Both operations run tofu init for the existing S3 backend and prepare-inventory.yml
+from named outputs, then connect through the bastion. They never run infrastructure
+plan/apply/destroy, nor install/reconfigure monitoring. Spaces credentials, SSH
+identity/public-key Variable and PXC_ROOT_PASSWORD are required; DigitalOcean
+API and Grafana credentials are not passed. Empty/missing outputs fail before
+remote actions. Both workflows share concurrency group tassadar-production.
+Recovery and the outage test remain separate manual playbooks.
 
 # playbooks/pxc.yml
 
@@ -71,11 +86,17 @@ This playbook installs and configures a three-node Percona XtraDB Cluster. It
 expects the inventory group `pxc` to contain exactly `pxc-1`, `pxc-2`, and
 `pxc-3`.
 
-The playbook consists of two plays and three roles:
+The complete playbook validates inputs, probes all nodes, installs/bootstrap
+only for three empty new volumes, then runs shared health/replication checks.
+A healthy existing cluster skips installation and bootstrap. Mixed, stopped,
+wrong-password or ambiguous states fail before package/service changes.
 
-1. `Prepare Percona nodes` runs the `pxc` role on all PXC nodes.
-2. `Configure PXC cluster` runs the `pxc_cluster` orchestration role, which
-   calls the shared `pxc_verify` role after joining the nodes.
+`pxc_preflight` checks the expected ext4 block devices and mount identity.
+Unmounted clean filesystems are inspected through temporary `ro,noload`
+mounts, then unmounted before their temporary directories are removed.
+Existing data and nonempty `lost+found` are never classified as fresh.
+Partial or full-cluster recovery is a separate operation.
+
 
 ## Role `pxc`
 
@@ -86,10 +107,10 @@ all three nodes:
 - waits until `cloud-init` has finished;
 - installs the packages required by the official Percona apt repository;
 - installs `percona-release` and enables the `pxc80` repository;
-- waits for the dedicated data device at `/dev/disk/by-id/virtio-data`;
+- waits for the dedicated data device at `/dev/disk/by-id/scsi-0DO_Volume_<node>-data`;
 - formats the device as `ext4` only when it does not already contain a
   filesystem;
-- persists the stable `/dev/disk/by-id/virtio-data` mount in `/etc/fstab`;
+- persists the stable by-id mount in `/etc/fstab`;
 - preserves existing mount-point ownership during recovery;
 - preseeds the MySQL root password for non-interactive package installation;
 - installs the `percona-xtradb-cluster` package directly onto the mounted data
@@ -121,9 +142,8 @@ The cluster role orchestrates the nodes in a strict order:
 4. Starts regular `mysql` on `pxc-2` and verifies a healthy two-node cluster.
 5. Starts regular `mysql` on `pxc-3` and verifies a healthy three-node
    cluster.
-6. Checks wsrep health on every node.
-7. Verifies replication with a database, table, and row written across
-   different nodes.
+The final play uses the shared `pxc_verify` role to check health, a common
+cluster UUID, and write/read replication across all three nodes.
 
 The orchestration tasks use `run_once` with `delegate_to`. Ansible still opens
 each SSH connection from the local control machine through the bastion; the PXC
@@ -131,7 +151,10 @@ nodes do not connect to each other over SSH.
 
 ## Variables
 
-Cluster variables are defined in `group_vars/pxc.yml`:
+Shared defaults are defined in `roles/pxc_config/defaults/main.yml` and loaded
+explicitly by each PXC playbook. Inventory/group_vars/host_vars and extra-vars
+can override them; play-level vars_files no longer overwrite node settings.
+Cluster variables include:
 
 - `pxc_repo` selects the Percona repository (`pxc80` by default);
 - `pxc_cluster_name` sets the wsrep cluster name;
@@ -143,20 +166,44 @@ Cluster variables are defined in `group_vars/pxc.yml`:
 - `pxc_tls_files` and `pxc_tls_private_files` describe the TLS files copied
   from the bootstrap node;
 - `pxc_cluster_address` is generated from all PXC private IP addresses;
-- `pxc_root_password` is generated once in `.generated/pxc_root_password`.
+- `pxc_root_password` resolves the protected runtime password or local override.
 
-To provide a fixed root password, define `pxc_root_password_override` in
-Ansible variables. Do not commit the password to the repository.
+CI sets `PXC_ROOT_PASSWORD` only for credential validation, deployment and
+verification, with `pxc_require_runtime_password=true`. This requires at
+least 20 characters and never generates a fallback password file. It is not
+passed in argv or stored in inventory/state. No password reset is performed.
 
-## Tags
+PXC passwords must not contain single quotes or backslashes, which the
+Percona package initializer cannot safely handle. Validation fails before
+cloud changes in CI and before invoking the installer during recovery.
 
-- `install` runs package installation and configuration;
-- `cluster` runs bootstrap and sequential node joins;
-- `verify` runs wsrep health and replication checks.
+Local runs accept `PXC_ROOT_PASSWORD` or `pxc_root_password_override` from
+protected Ansible variables. Without either, the existing local password file
+is reused/generated; overrides do not evaluate that lookup. Local passwords
+retain the existing 12-character minimum. Credentials must have no CR/LF or
+leading/trailing whitespace. Playbooks explicitly load shared PXC variables
+even when inventory is outside the repository.
 
-The initial deployment should use the complete playbook. The `install` tag
-prepares storage and leaves MySQL stopped, `cluster` expects prepared nodes,
-and `verify` expects an already running three-node cluster.
+
+## Tags and verification
+
+Use the complete playbook for deployment. For a healthy running cluster:
+
+```bash
+ansible-playbook playbooks/pxc.yml --tags verify
+# Or:
+ansible-playbook playbooks/pxc-verify.yml
+```
+
+Partial `install`/`cluster` runs, `--skip-tags`, `--limit` and
+`--check` are rejected by deployment preflight. They could bypass the
+classification or verification needed for safe deployment. The standalone
+verification playbook checks credentials/host selection and shared SQL checks.
+
+The verifier writes only the dedicated `percona.example` test table.
+It does not test database recovery or automatically restart an unhealthy cluster.
+After an interrupted initial install/bootstrap, inspect the state before choosing
+a recovery procedure; this version does not auto-resume a partial bootstrap.
 
 ## Recover one PXC node
 

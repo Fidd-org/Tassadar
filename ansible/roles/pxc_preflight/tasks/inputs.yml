@@ -1,0 +1,12 @@
+---
+- name: Require the complete PXC inventory and a normal execution
+  ansible.builtin.assert:
+    that:
+      - groups.get('pxc', []) | sort == ['pxc-1', 'pxc-2', 'pxc-3']
+      - ansible_limit | default('') | length == 0
+      - not ansible_check_mode
+      - ansible_run_tags | default(['all']) | difference(['all', 'verify']) | length == 0
+      - ansible_skip_tags | default([]) | length == 0
+    fail_msg: Use the full PXC deployment or --tags verify, with pxc-1..pxc-3 and no --limit, --check or --skip-tags.
+  run_once: true
+

@@ -26,6 +26,12 @@ tofu show -json "$runtime_directory/plan.tfplan" |
     if ($operation == "destroy" or $operation == "destroy-plan") and
        any($changes[]; .change.actions != ["delete"] and .change.actions != ["no-op"])
     then error("Destroy plan must contain only delete or no-op actions")
+    elif ($operation == "plan" or $operation == "apply") and
+         any($changes[];
+           ((.type == "digitalocean_volume" and .name == "pxc_data") or
+            (.address | test("(^|\\.)digitalocean_volume\\.pxc_data(\\[|$)"))) and
+           any(.change.actions[]; . == "delete" or . == "forget"))
+    then error("Ordinary deploy cannot delete, replace or forget PXC data volumes; use a separate reviewed maintenance operation or explicit full destroy")
     else $changes end |
     [.[].change.actions[]] as $actions |
     "create=\($actions | map(select(. == "create")) | length)",

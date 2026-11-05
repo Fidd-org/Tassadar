@@ -7,13 +7,16 @@ MySQL Exporter.
 ## GitHub deployment
 
 Manage infrastructure with operation apply provisions resources and then runs
-SSH/Python checks, node-exporter.yml, prometheus.yml, grafana.yml and the shared
-prometheus-verify.yml/grafana-verify.yml checks in the same job. No separate
+SSH/Python checks, node-exporter.yml, prometheus.yml, grafana.yml and final
+monitoring checks in the same job. PXC deploy/verify is a separate Manage PXC
+workflow. No separate
 manual monitoring workflow is required. Plan previews resources only; check
 tests connectivity on existing VMs and does not install services.
 
 Set ANSIBLE_SSH_PRIVATE_KEY and GRAFANA_ADMIN_PASSWORD in GitHub Secrets,
-with the matching INFRA_SSH_PUBLIC_KEY Variable. Before cloud changes, the
+with the matching INFRA_SSH_PUBLIC_KEY Variable. Infrastructure apply does not
+require PXC_ROOT_PASSWORD; monitoring roles do not receive database credentials.
+Before cloud changes, the
 workflow checks the SSH identity and runs check-monitoring-credentials.yml.
 The latter imports only the existing Grafana credential validation tasks on
 localhost; it does not connect to a VM or install Grafana.

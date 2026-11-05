@@ -4,7 +4,7 @@
     mysql --user={{ pxc_root_user }}
     --batch --skip-column-names
     --execute="SHOW STATUS WHERE Variable_name IN
-    ('wsrep_cluster_size', 'wsrep_cluster_status', 'wsrep_local_state_comment', 'wsrep_connected', 'wsrep_ready');"
+    ('wsrep_cluster_size', 'wsrep_cluster_status', 'wsrep_local_state_comment', 'wsrep_connected', 'wsrep_ready', 'wsrep_cluster_state_uuid');"
   environment:
     MYSQL_PWD: "{{ pxc_root_password }}"
   loop: "{{ groups['pxc'] }}"
@@ -21,17 +21,43 @@
 - name: Verify healthy 3-node Primary cluster
   ansible.builtin.assert:
     that:
-      - "'wsrep_cluster_size\t3' in item.stdout"
-      - "'wsrep_cluster_status\tPrimary' in item.stdout"
-      - "'wsrep_local_state_comment\tSynced' in item.stdout"
-      - "'wsrep_connected\tON' in item.stdout"
-      - "'wsrep_ready\tON' in item.stdout"
+      - "'wsrep_cluster_size\t3' in item.stdout_lines"
+      - "'wsrep_cluster_status\tPrimary' in item.stdout_lines"
+      - "'wsrep_local_state_comment\tSynced' in item.stdout_lines"
+      - "'wsrep_connected\tON' in item.stdout_lines"
+      - "'wsrep_ready\tON' in item.stdout_lines"
     fail_msg: "PXC node is not fully synced in a 3-node Primary cluster."
   loop: "{{ pxc_wsrep_health_status.results }}"
   run_once: true
   no_log: true
   tags:
     - verify
+
+- name: Decode the cluster identity from every successful health response
+  ansible.builtin.set_fact:
+    pxc_verified_cluster_uuids: >-
+      {{ pxc_wsrep_health_status.results | map(attribute='stdout_lines')
+         | map('select', 'match', '^wsrep_cluster_state_uuid\t')
+         | map('list') | list }}
+  run_once: true
+  no_log: true
+  tags: [verify]
+
+- name: Require exactly one nonzero cluster identity on every node
+  ansible.builtin.assert:
+    that:
+      - pxc_verified_cluster_uuids | map('length') | list == [1, 1, 1]
+      - pxc_verified_cluster_uuids | map('first') | unique | list | length == 1
+      - >-
+        (pxc_verified_cluster_uuids | first | first)
+        is match('^wsrep_cluster_state_uuid\t[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+      - >-
+        (pxc_verified_cluster_uuids | first | first)
+        != 'wsrep_cluster_state_uuid\t00000000-0000-0000-0000-000000000000'
+    fail_msg: PXC nodes do not share one valid cluster identity.
+  run_once: true
+  no_log: true
+  tags: [verify]
 
 - name: Create replication test database
   ansible.builtin.command: >

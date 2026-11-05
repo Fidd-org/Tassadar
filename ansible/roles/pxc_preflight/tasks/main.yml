@@ -1,0 +1,174 @@
+---
+- name: Validate PXC inputs
+  ansible.builtin.import_tasks: inputs.yml
+
+- name: Validate the credential resolved for this PXC node
+  ansible.builtin.import_tasks: credentials.yml
+
+- name: Require the supported platform and complete host selection
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.distribution == 'Ubuntu'
+      - ansible_facts.distribution_major_version == '24'
+      - ansible_facts.architecture == 'x86_64'
+      - ansible_facts.service_mgr == 'systemd'
+      - ansible_play_hosts_all | sort == groups['pxc'] | sort
+    fail_msg: PXC deployment requires all three Ubuntu 24.04 amd64/systemd nodes.
+
+- name: Wait until the dedicated data volume is visible
+  ansible.builtin.wait_for:
+    path: "{{ pxc_data_device }}"
+    timeout: 120
+
+- name: Inspect the data device without reading its contents
+  ansible.builtin.stat:
+    path: "{{ pxc_data_device }}"
+    follow: true
+    get_checksum: false
+    get_mime: false
+  register: pxc_volume_device
+
+- name: Require an actual block device
+  ansible.builtin.assert:
+    that:
+      - pxc_volume_device.stat.isblk | default(false)
+    fail_msg: Expected the dedicated PXC block volume, not a regular file.
+
+- name: Read the device filesystem type
+  ansible.builtin.command:
+    argv: [lsblk, --nodeps, --noheadings, --output, FSTYPE, "{{ pxc_data_device }}"]
+  register: pxc_volume_filesystem
+  changed_when: false
+
+- name: Require the ext4 filesystem provisioned by OpenTofu
+  ansible.builtin.assert:
+    that:
+      - pxc_volume_filesystem.stdout | trim == 'ext4'
+    fail_msg: Expected an existing ext4 PXC volume; deployment preflight never formats unknown storage.
+
+- name: Read the data device identity
+  ansible.builtin.command:
+    argv: [lsblk, --nodeps, --noheadings, --output, "MAJ:MIN", "{{ pxc_data_device }}"]
+  register: pxc_volume_identity
+  changed_when: false
+
+- name: Inspect the data directory mount identity
+  ansible.builtin.command:
+    argv: [findmnt, --noheadings, --output, "MAJ:MIN", --mountpoint, "{{ pxc_mysql_datadir }}"]
+  register: pxc_mount_identity
+  changed_when: false
+  failed_when: pxc_mount_identity.rc not in [0, 1]
+
+- name: Record whether the volume is already mounted
+  ansible.builtin.set_fact:
+    pxc_volume_mounted: "{{ pxc_mount_identity.rc == 0 }}"
+    pxc_probe_status: {}
+
+- name: Refuse a different filesystem at the MySQL mount point
+  ansible.builtin.assert:
+    that:
+      - pxc_mount_identity.stdout | trim == pxc_volume_identity.stdout | trim
+    fail_msg: The MySQL data directory is mounted from a different device.
+  when: pxc_volume_mounted | bool
+
+- name: Read the root of the mounted filesystem
+  ansible.builtin.command:
+    argv: [findmnt, --raw, --noheadings, --output, FSROOT, --mountpoint, "{{ pxc_mysql_datadir }}"]
+  register: pxc_mount_root
+  changed_when: false
+  when: pxc_volume_mounted | bool
+
+- name: Refuse a bind-mounted subdirectory of the data volume
+  ansible.builtin.assert:
+    that:
+      - pxc_mount_root.stdout | trim == '/'
+    fail_msg: The MySQL mount must expose the root of the data volume, not a subdirectory.
+  when: pxc_volume_mounted | bool
+
+- name: Inspect nested mounts that could hide existing volume data
+  ansible.builtin.command:
+    argv: [findmnt, --raw, --noheadings, --submounts, --output, TARGET, --mountpoint, "{{ pxc_mysql_datadir }}"]
+  register: pxc_mount_tree
+  changed_when: false
+  when: pxc_volume_mounted | bool
+
+- name: Require the data filesystem to have no masking child mounts
+  ansible.builtin.assert:
+    that:
+      - pxc_mount_tree.stdout_lines | length == 1
+    fail_msg: Nested mounts hide parts of the data volume; inspect it before deployment.
+  when: pxc_volume_mounted | bool
+
+- name: Read the existing data mount options
+  ansible.builtin.command:
+    argv: [findmnt, --noheadings, --output, OPTIONS, --mountpoint, "{{ pxc_mysql_datadir }}"]
+  register: pxc_data_mount_options
+  changed_when: false
+  when: pxc_volume_mounted | bool
+
+- name: Require an existing data mount to be writable
+  ansible.builtin.assert:
+    that:
+      - "'rw' in (pxc_data_mount_options.stdout | trim).split(',')"
+    fail_msg: The PXC data volume is mounted read-only; repair the mount before deployment.
+  when: pxc_volume_mounted | bool
+
+- name: Inspect an already mounted data directory
+  ansible.builtin.include_tasks: read-data.yml
+  vars:
+    pxc_inspection_path: "{{ pxc_mysql_datadir }}"
+  when: pxc_volume_mounted | bool
+
+- name: Inspect an unmounted data volume
+  ansible.builtin.include_tasks: inspect-unmounted.yml
+  when: not (pxc_volume_mounted | bool)
+
+- name: Check for the MySQL client
+  ansible.builtin.stat:
+    path: /usr/bin/mysql
+    get_checksum: false
+    get_mime: false
+  register: pxc_client
+
+- name: Check for the MySQL server binary
+  ansible.builtin.stat:
+    path: /usr/sbin/mysqld
+    get_checksum: false
+    get_mime: false
+  register: pxc_server
+
+- name: Check whether mysqld is running
+  ansible.builtin.command:
+    argv: [pgrep, -x, mysqld]
+  register: pxc_process
+  changed_when: false
+  failed_when: pxc_process.rc not in [0, 1]
+
+- name: Probe the existing database without treating authentication errors as an empty node
+  ansible.builtin.command:
+    argv:
+      - mysql
+      - "--user={{ pxc_root_user }}"
+      - --batch
+      - --skip-column-names
+      - >-
+        --execute=SHOW GLOBAL VARIABLES WHERE Variable_name IN ('datadir','wsrep_cluster_name');
+        SHOW GLOBAL STATUS WHERE Variable_name IN
+        ('wsrep_cluster_size','wsrep_cluster_status','wsrep_local_state_comment',
+        'wsrep_connected','wsrep_ready','wsrep_cluster_state_uuid');
+  environment:
+    MYSQL_PWD: "{{ pxc_root_password }}"
+  register: pxc_wsrep_probe
+  changed_when: false
+  failed_when: false
+  when: pxc_client.stat.exists and pxc_process.rc == 0
+  no_log: true
+
+- name: Decode only successful MySQL status responses
+  ansible.builtin.set_fact:
+    pxc_probe_status: "{{ dict(pxc_wsrep_probe.stdout_lines | map('split', '\t')) }}"
+  when: pxc_wsrep_probe.rc | default(1) == 0
+  no_log: true
+
+- name: Select fresh or healthy deployment before changing packages or MySQL
+  ansible.builtin.import_tasks: classify.yml

@@ -1,19 +1,89 @@
 ---
-- name: Prepare Percona nodes
+- name: Validate PXC deployment inputs on the controller
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  pre_tasks:
+    - name: Load shared PXC defaults without overriding inventory
+      ansible.builtin.import_role:
+        name: pxc_config
+        public: true
+      tags: [always]
+  tasks:
+    - name: Require a complete deployment invocation
+      ansible.builtin.import_role:
+        name: pxc_preflight
+        tasks_from: inputs
+  tags: [always]
+
+- name: Inspect all PXC nodes before installation or bootstrap
   hosts: pxc
   become: true
   any_errors_fatal: true
+  pre_tasks:
+    - name: Load shared PXC defaults without overriding inventory
+      ansible.builtin.import_role:
+        name: pxc_config
+        public: true
+      tags: [always]
   roles:
-    - role: pxc
-      tags:
-        - install
-  tags:
-    - install
+    - pxc_preflight
+  tags: [always]
 
-- name: Configure PXC cluster
+- name: Prepare new Percona nodes
   hosts: pxc
   become: true
   gather_facts: false
   any_errors_fatal: true
+  pre_tasks:
+    - name: Load shared PXC defaults without overriding inventory
+      ansible.builtin.import_role:
+        name: pxc_config
+        public: true
+      tags: [always]
+  roles:
+    - role: pxc
+      when: pxc_deployment_mode == 'fresh'
+  tags: [install]
+
+- name: Bootstrap only a new PXC cluster
+  hosts: pxc
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  pre_tasks:
+    - name: Load shared PXC defaults without overriding inventory
+      ansible.builtin.import_role:
+        name: pxc_config
+        public: true
+      tags: [always]
   roles:
     - role: pxc_cluster
+      when: pxc_deployment_mode == 'fresh'
+  tags: [cluster]
+
+- name: Verify the new or existing PXC cluster
+  hosts: pxc
+  become: true
+  gather_facts: false
+  any_errors_fatal: true
+  pre_tasks:
+    - name: Load shared PXC defaults without overriding inventory
+      ansible.builtin.import_role:
+        name: pxc_config
+        public: true
+      tags: [always]
+  roles:
+    - pxc_verify
+  tasks:
+    - name: Record successful PXC deployment without credentials
+      ansible.builtin.copy:
+        content: "{{ {'mode': pxc_deployment_mode, 'hosts': groups['pxc'] | sort, 'verified': true} | to_json }}"
+        dest: "{{ pxc_summary_path }}"
+        mode: "0600"
+      when: pxc_summary_path | default('') | length > 0
+      run_once: true
+      delegate_to: localhost
+      connection: local
+      become: false
+  tags: [verify]

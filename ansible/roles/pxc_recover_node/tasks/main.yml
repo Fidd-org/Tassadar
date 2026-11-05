@@ -61,11 +61,11 @@
   changed_when: false
   until:
     - pxc_recovery_join_status.rc == 0
-    - "'wsrep_cluster_size\t3' in pxc_recovery_join_status.stdout"
-    - "'wsrep_cluster_status\tPrimary' in pxc_recovery_join_status.stdout"
-    - "'wsrep_local_state_comment\tSynced' in pxc_recovery_join_status.stdout"
-    - "'wsrep_connected\tON' in pxc_recovery_join_status.stdout"
-    - "'wsrep_ready\tON' in pxc_recovery_join_status.stdout"
+    - "'wsrep_cluster_size\t3' in pxc_recovery_join_status.stdout_lines"
+    - "'wsrep_cluster_status\tPrimary' in pxc_recovery_join_status.stdout_lines"
+    - "'wsrep_local_state_comment\tSynced' in pxc_recovery_join_status.stdout_lines"
+    - "'wsrep_connected\tON' in pxc_recovery_join_status.stdout_lines"
+    - "'wsrep_ready\tON' in pxc_recovery_join_status.stdout_lines"
   retries: 180
   delay: 10
   delegate_to: "{{ pxc_recovery_node }}"

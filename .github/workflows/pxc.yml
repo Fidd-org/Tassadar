@@ -1,0 +1,205 @@
+name: Manage PXC
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Deploy PXC on existing VMs or verify cluster health and replication
+        type: choice
+        options:
+          - deploy
+          - verify
+        default: verify
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tassadar-production
+  cancel-in-progress: false
+
+jobs:
+  pxc:
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+        working-directory: ansible
+    env:
+      TF_IN_AUTOMATION: "true"
+      TF_INPUT: "false"
+
+    steps:
+      - name: Check out Tassadar
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate the requested operation
+        id: request
+        env:
+          OPERATION: ${{ inputs.operation }}
+        run: |
+          set -euo pipefail
+          case "$OPERATION" in
+            deploy|verify) ;;
+            *) echo '::error::Choose deploy or verify'; exit 1 ;;
+          esac
+
+      - name: Install OpenTofu for reading state outputs
+        uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: 1.12.3
+          tofu_wrapper: false
+
+      - name: Install Ansible
+        id: ansible
+        run: |
+          set -euo pipefail
+          ansible_venv="$RUNNER_TEMP/tassadar-ansible-venv"
+          python3 -m venv "$ansible_venv"
+          "$ansible_venv/bin/python" -m pip install --disable-pip-version-check -r "$GITHUB_WORKSPACE/ansible/requirements.txt"
+          echo "$ansible_venv/bin" >> "$GITHUB_PATH"
+
+      - name: Prepare controller SSH identity
+        id: ssh
+        env:
+          ANSIBLE_SSH_PRIVATE_KEY: ${{ secrets.ANSIBLE_SSH_PRIVATE_KEY }}
+          INFRA_SSH_PUBLIC_KEY: ${{ vars.INFRA_SSH_PUBLIC_KEY }}
+        run: bash ../.github/scripts/prepare-ansible-ssh.sh
+
+      - name: Validate PXC credentials
+        id: pxc_credentials
+        env:
+          ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
+          PXC_ROOT_PASSWORD: ${{ secrets.PXC_ROOT_PASSWORD }}
+        run: ansible-playbook -i localhost, playbooks/check-pxc-credentials.yml -e pxc_require_runtime_password=true
+
+      - name: Initialize the existing S3 state backend
+        id: initialize
+        working-directory: tofu
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          for required_name in AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
+            if [[ -z "${!required_name}" ]]; then
+              echo "::error::$required_name is required"
+              exit 1
+            fi
+          done
+          tofu init -input=false -lockfile=readonly -no-color
+
+      - name: Prepare inventory from the current state outputs
+        id: inventory
+        env:
+          ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
+          AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_ACCESS_KEY }}
+        run: bash ../.github/scripts/prepare-ansible-inventory.sh
+
+      - name: Check SSH and Python on PXC nodes through the bastion
+        id: connectivity
+        env:
+          ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
+        run: |
+          ansible -i "$RUNNER_TEMP/tassadar-ansible/inventory.yml" pxc \
+            --module-name ansible.builtin.wait_for_connection \
+            --args 'timeout=300 connect_timeout=10 sleep=5'
+
+      - name: Deploy a new PXC cluster or verify the healthy existing cluster
+        id: pxc
+        if: inputs.operation == 'deploy'
+        working-directory: ansible
+        env:
+          ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
+          PXC_ROOT_PASSWORD: ${{ secrets.PXC_ROOT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          runtime_directory="$RUNNER_TEMP/tassadar-ansible"
+          pxc_exit=0
+          ansible-playbook -i "$runtime_directory/inventory.yml" playbooks/pxc.yml \
+            -e "@$runtime_directory/inventory-vars.json" -e pxc_require_runtime_password=true || pxc_exit=$?
+          if [[ -f "$runtime_directory/pxc-deployment.json" ]]; then
+            deployment_mode="$(jq -er '.mode | select(. == "fresh" or . == "healthy")' "$runtime_directory/pxc-deployment.json")"
+            echo "deployment_mode=$deployment_mode" >> "$GITHUB_OUTPUT"
+            if [[ "$pxc_exit" == 0 ]]; then
+              jq -e '.verified == true' "$runtime_directory/pxc-deployment.json" > /dev/null
+            fi
+          elif [[ "$pxc_exit" == 0 ]]; then
+            echo '::error::PXC completed without a verified deployment report'
+            exit 1
+          fi
+          exit "$pxc_exit"
+
+      - name: Verify PXC health and cross-node replication
+        id: verify_pxc
+        if: inputs.operation == 'verify'
+        env:
+          ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
+          PXC_ROOT_PASSWORD: ${{ secrets.PXC_ROOT_PASSWORD }}
+        run: ansible-playbook -i "$RUNNER_TEMP/tassadar-ansible/inventory.yml" playbooks/pxc-verify.yml -e pxc_require_runtime_password=true
+
+      - name: Remove controller SSH files and generated inventory
+        id: cleanup_ssh
+        if: always()
+        run: bash ../.github/scripts/cleanup-ansible-ssh.sh
+
+      - name: Report PXC operation result
+        if: always()
+        env:
+          OPERATION: ${{ inputs.operation }}
+          JOB_STATUS: ${{ job.status }}
+          REQUEST_OUTCOME: ${{ steps.request.outcome }}
+          ANSIBLE_OUTCOME: ${{ steps.ansible.outcome }}
+          SSH_OUTCOME: ${{ steps.ssh.outcome }}
+          CREDENTIALS_OUTCOME: ${{ steps.pxc_credentials.outcome }}
+          INITIALIZE_OUTCOME: ${{ steps.initialize.outcome }}
+          INVENTORY_OUTCOME: ${{ steps.inventory.outcome }}
+          CONNECTIVITY_OUTCOME: ${{ steps.connectivity.outcome }}
+          PXC_OUTCOME: ${{ steps.pxc.outcome }}
+          PXC_DEPLOYMENT_MODE: ${{ steps.pxc.outputs.deployment_mode }}
+          VERIFY_OUTCOME: ${{ steps.verify_pxc.outcome }}
+          CLEANUP_OUTCOME: ${{ steps.cleanup_ssh.outcome }}
+        run: |
+          {
+            echo '### PXC operation'
+            echo
+            echo "Requested operation: $OPERATION"
+            echo
+            echo '| Step | Result |'
+            echo '| --- | --- |'
+            echo "| Request validation | $REQUEST_OUTCOME |"
+            echo "| Ansible installation | $ANSIBLE_OUTCOME |"
+            echo "| SSH identity | $SSH_OUTCOME |"
+            echo "| PXC credentials | $CREDENTIALS_OUTCOME |"
+            echo "| S3 backend initialization | $INITIALIZE_OUTCOME |"
+            echo "| Inventory from state outputs | $INVENTORY_OUTCOME |"
+            echo "| PXC SSH/Python through bastion | $CONNECTIVITY_OUTCOME |"
+            echo "| PXC deployment (${PXC_DEPLOYMENT_MODE:-not-classified}) | $PXC_OUTCOME |"
+            echo "| Standalone health and replication | $VERIFY_OUTCOME |"
+            echo "| Controller files cleanup | $CLEANUP_OUTCOME |"
+            echo
+            if [[ "$JOB_STATUS" == cancelled ]]; then
+              echo '**PXC operation canceled.** Inspect the cluster before retrying; cancellation does not roll back service changes.'
+            elif [[ "$JOB_STATUS" == success && "$REQUEST_OUTCOME" == success &&
+                    "$ANSIBLE_OUTCOME" == success && "$SSH_OUTCOME" == success &&
+                    "$CREDENTIALS_OUTCOME" == success && "$INITIALIZE_OUTCOME" == success &&
+                    "$INVENTORY_OUTCOME" == success && "$CONNECTIVITY_OUTCOME" == success &&
+                    "$CLEANUP_OUTCOME" == success ]] &&
+                 { [[ "$OPERATION" == deploy && "$PXC_OUTCOME" == success ]] ||
+                   [[ "$OPERATION" == verify && "$VERIFY_OUTCOME" == success ]]; }; then
+              echo '**PXC operation completed; health and cross-node replication verified.**'
+            else
+              echo '**PXC operation did not complete.** Inspect the failed step; existing resources and data are retained.'
+            fi
+            echo
+            echo 'This workflow reads infrastructure outputs and never runs infrastructure plan/apply/destroy.'
+            echo 'Deploy bootstraps only three new empty nodes; an existing healthy cluster is verified.'
+            echo 'Verify writes and reads the dedicated percona.example test table; application data is not tested.'
+            echo 'Recovery is a separate manual playbook.'
+          } >> "$GITHUB_STEP_SUMMARY"

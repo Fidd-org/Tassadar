@@ -42,11 +42,11 @@
     that:
       - not (item.unreachable | default(false))
       - item.rc | default(1) == 0
-      - "'wsrep_cluster_size\t2' in (item.stdout | default(''))"
-      - "'wsrep_cluster_status\tPrimary' in (item.stdout | default(''))"
-      - "'wsrep_local_state_comment\tSynced' in (item.stdout | default(''))"
-      - "'wsrep_connected\tON' in (item.stdout | default(''))"
-      - "'wsrep_ready\tON' in (item.stdout | default(''))"
+      - "'wsrep_cluster_size\t2' in (item.stdout_lines | default([]))"
+      - "'wsrep_cluster_status\tPrimary' in (item.stdout_lines | default([]))"
+      - "'wsrep_local_state_comment\tSynced' in (item.stdout_lines | default([]))"
+      - "'wsrep_connected\tON' in (item.stdout_lines | default([]))"
+      - "'wsrep_ready\tON' in (item.stdout_lines | default([]))"
     fail_msg: >-
       Survivor {{ item.item | default('unknown') }} is not a healthy member of a
       two-node Primary component. Refusing single-node recovery.

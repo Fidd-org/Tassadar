@@ -9,6 +9,11 @@
     fail_msg: "Expected Ubuntu hosts pxc-1..pxc-3 and root password with at least 12 chars."
   no_log: true
 
+- name: Validate the password before passing it to the Percona installer
+  ansible.builtin.import_role:
+    name: pxc_preflight
+    tasks_from: credentials
+
 - name: Wait for cloud-init to finish
   ansible.builtin.command: cloud-init status --wait
   changed_when: false
@@ -124,25 +129,38 @@
   changed_when: pxc_remove_lost_found.rc == 0
   failed_when: false
 
-- name: Preseed PXC root password
-  ansible.builtin.debconf:
-    name: percona-xtradb-cluster-server
-    question: "{{ item }}"
-    value: "{{ pxc_root_password }}"
-    vtype: password
-  loop:
-    - percona-xtradb-cluster-server/root-pass
-    - percona-xtradb-cluster-server/re-root-pass
-  no_log: true
+- name: Install PXC with a temporary debconf credential
+  block:
+    - name: Preseed PXC root password
+      ansible.builtin.debconf:
+        name: percona-xtradb-cluster-server
+        question: "{{ item }}"
+        value: "{{ pxc_root_password }}"
+        vtype: password
+      loop:
+        - percona-xtradb-cluster-server/root-pass
+        - percona-xtradb-cluster-server/re-root-pass
+      no_log: true
 
-- name: Install Percona XtraDB Cluster
-  ansible.builtin.apt:
-    name: percona-xtradb-cluster
-    state: present
-    lock_timeout: 300
-    policy_rc_d: 101
-  environment:
-    DEBIAN_FRONTEND: noninteractive
+    - name: Install Percona XtraDB Cluster
+      ansible.builtin.apt:
+        name: percona-xtradb-cluster
+        state: present
+        lock_timeout: 300
+        policy_rc_d: 101
+      environment:
+        DEBIAN_FRONTEND: noninteractive
+  always:
+    - name: Clear the temporary root password from debconf
+      ansible.builtin.debconf:
+        name: percona-xtradb-cluster-server
+        question: "{{ item }}"
+        value: ""
+        vtype: password
+      loop:
+        - percona-xtradb-cluster-server/root-pass
+        - percona-xtradb-cluster-server/re-root-pass
+      no_log: true
 
 - name: Ensure MySQL owns the mounted data directory
   ansible.builtin.file:

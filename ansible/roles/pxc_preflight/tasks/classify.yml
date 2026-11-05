@@ -1,0 +1,53 @@
+---
+- name: Classify this node from successful disk and MySQL probes
+  ansible.builtin.set_fact:
+    pxc_node_fresh: >-
+      {{ not pxc_client.stat.exists
+         and not pxc_server.stat.exists
+         and pxc_process.rc == 1
+         and pxc_data_empty | bool }}
+    pxc_node_healthy: >-
+      {{ pxc_volume_mounted | bool
+         and pxc_client.stat.exists
+         and pxc_server.stat.exists
+         and pxc_process.rc == 0
+         and (pxc_wsrep_probe.rc | default(1)) == 0
+         and pxc_probe_status.get('wsrep_cluster_size', '') == '3'
+         and pxc_probe_status.get('wsrep_cluster_status', '') == 'Primary'
+         and pxc_probe_status.get('wsrep_local_state_comment', '') == 'Synced'
+         and pxc_probe_status.get('wsrep_connected', '') == 'ON'
+         and pxc_probe_status.get('wsrep_ready', '') == 'ON'
+         and pxc_probe_status.get('wsrep_cluster_name', '') == pxc_cluster_name
+         and pxc_probe_status.get('datadir', '') | regex_replace('/+$', '') == pxc_mysql_datadir | regex_replace('/+$', '')
+         and pxc_probe_status.get('wsrep_cluster_state_uuid', '') is match('^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+         and pxc_probe_status.get('wsrep_cluster_state_uuid', '') != '00000000-0000-0000-0000-000000000000' }}
+
+- name: Require three new nodes or three healthy members of the same cluster
+  ansible.builtin.assert:
+    that:
+      - >-
+        (groups['pxc'] | map('extract', hostvars, 'pxc_node_fresh') | select('equalto', true) | list | length == 3)
+        or
+        ((groups['pxc'] | map('extract', hostvars, 'pxc_node_healthy') | select('equalto', true) | list | length == 3)
+         and (groups['pxc'] | map('extract', hostvars, 'pxc_probe_status')
+              | map(attribute='wsrep_cluster_state_uuid') | unique | list | length == 1))
+    fail_msg: >-
+      PXC is neither a new empty deployment nor a healthy three-node cluster.
+      Check credentials, mounts and wsrep status. Existing data, a partial cluster
+      or an interrupted bootstrap requires diagnosis/recovery; no bootstrap was started.
+  run_once: true
+
+- name: Select the same deployment branch on every node
+  ansible.builtin.set_fact:
+    pxc_deployment_mode: "{{ 'fresh' if pxc_node_fresh else 'healthy' }}"
+
+- name: Record the deployment decision before changing packages or MySQL
+  ansible.builtin.copy:
+    content: "{{ {'mode': pxc_deployment_mode, 'hosts': groups['pxc'] | sort, 'verified': false} | to_json }}"
+    dest: "{{ pxc_summary_path }}"
+    mode: "0600"
+  when: pxc_summary_path | default('') | length > 0
+  run_once: true
+  delegate_to: localhost
+  connection: local
+  become: false
