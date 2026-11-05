@@ -1,0 +1,51 @@
+---
+- name: Read the mounted filesystem identity and root
+  ansible.builtin.command:
+    argv: [findmnt, --raw, --noheadings, --output, "MAJ:MIN,FSROOT", --mountpoint, "{{ pxc_inspection_path }}"]
+  register: pxc_inspected_mount
+  changed_when: false
+
+- name: Require the root of the expected data volume
+  ansible.builtin.assert:
+    that:
+      - pxc_inspected_mount.stdout.split() == [pxc_volume_identity.stdout | trim, '/']
+    fail_msg: Expected the complete PXC volume, not another device or a bind-mounted subdirectory.
+
+- name: Read all mount points of the expected data volume
+  ansible.builtin.command:
+    argv: [lsblk, --nodeps, --noheadings, --output, MOUNTPOINTS, "{{ pxc_data_device }}"]
+  register: pxc_inspected_volume_mounts
+  changed_when: false
+
+- name: Require exactly one mount of the data volume
+  ansible.builtin.assert:
+    that:
+      - pxc_inspected_volume_mounts.stdout_lines | map('trim') | reject('equalto', '') | list == [pxc_inspection_path]
+    fail_msg: The PXC volume has unexpected or multiple mount points.
+
+- name: Inspect nested mounts that could hide existing volume data
+  ansible.builtin.command:
+    argv: [findmnt, --raw, --noheadings, --submounts, --output, TARGET, --mountpoint, "{{ pxc_inspection_path }}"]
+  register: pxc_mount_tree
+  changed_when: false
+
+- name: Require the data filesystem to have no masking child mounts
+  ansible.builtin.assert:
+    that:
+      - pxc_mount_tree.stdout_lines | length == 1
+    fail_msg: Nested mounts hide parts of the data volume; inspect it before deployment.
+
+- name: Read the existing data mount options
+  ansible.builtin.command:
+    argv: [findmnt, --noheadings, --output, OPTIONS, --mountpoint, "{{ pxc_inspection_path }}"]
+  register: pxc_data_mount_options
+  changed_when: false
+
+- name: Require a writable data mount
+  ansible.builtin.assert:
+    that:
+      - "'rw' in (pxc_data_mount_options.stdout | trim).split(',')"
+    fail_msg: The PXC volume is read-only; inspect it before deployment.
+
+- name: Inspect all entries at the filesystem root
+  ansible.builtin.include_tasks: read-data.yml

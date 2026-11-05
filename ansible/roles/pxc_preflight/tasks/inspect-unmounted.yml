@@ -5,42 +5,22 @@
   register: pxc_other_mounts
   changed_when: false
 
-- name: Refuse inspection of a volume mounted elsewhere
+- name: Allow only an unmounted volume or its known DigitalOcean automount
   ansible.builtin.assert:
     that:
-      - pxc_other_mounts.stdout | trim == ''
-    fail_msg: The PXC volume is mounted outside its expected data directory.
+      - >-
+        pxc_other_mounts.stdout | trim == ''
+        or (pxc_other_mounts.stdout_lines | map('trim') | reject('equalto', '') | list == [pxc_do_automount_path])
+    fail_msg: The PXC volume is mounted at an unknown or multiple locations; refusing deployment.
 
-- name: Inspect the inactive data mount point
-  ansible.builtin.stat:
-    path: "{{ pxc_mysql_datadir }}"
-    follow: false
-    get_checksum: false
-    get_mime: false
-  register: pxc_inactive_mount
+- name: Check the inactive MySQL directory before any alternate mount inspection
+  ansible.builtin.include_tasks: inspect-inactive-mountpoint.yml
 
-- name: Require a regular directory or absent mount point
-  ansible.builtin.assert:
-    that:
-      - not pxc_inactive_mount.stat.exists or (pxc_inactive_mount.stat.isdir | default(false))
-      - not (pxc_inactive_mount.stat.islnk | default(false))
-    fail_msg: The PXC data mount point is not a regular directory.
-
-- name: Inspect files outside the data volume before any mount
-  ansible.builtin.find:
-    paths: "{{ pxc_mysql_datadir }}"
-    file_type: any
-    hidden: true
-    recurse: false
-  register: pxc_root_data_listing
-  when: pxc_inactive_mount.stat.exists
-
-- name: Refuse to hide existing root-disk data with a new mount
-  ansible.builtin.assert:
-    that:
-      - pxc_root_data_listing.matched | default(0) == 0
-      - pxc_root_data_listing.skipped_paths | default({}) | length == 0
-    fail_msg: Files exist outside the PXC data volume, or inspection failed; refusing deployment.
+- name: Inspect the known DigitalOcean automount without changing it
+  ansible.builtin.include_tasks: inspect-mounted.yml
+  vars:
+    pxc_inspection_path: "{{ pxc_do_automount_path }}"
+  when: pxc_other_mounts.stdout | trim != ''
 
 - name: Inspect the unmounted ext4 superblock
   ansible.builtin.command:
@@ -49,6 +29,7 @@
     LC_ALL: C
   register: pxc_unmounted_superblock
   changed_when: false
+  when: pxc_other_mounts.stdout | trim == ''
 
 - name: Refuse a dirty filesystem or a journal requiring recovery
   ansible.builtin.assert:
@@ -60,6 +41,7 @@
         pxc_unmounted_superblock.stdout_lines
         | select('search', 'needs_recovery') | list | length == 0
     fail_msg: The unmounted PXC volume is not clean; inspect/recover it before deployment.
+  when: pxc_other_mounts.stdout | trim == ''
 
 - name: Allocate a private temporary mount point for inspection
   ansible.builtin.tempfile:
@@ -67,8 +49,10 @@
     prefix: tassadar-pxc-inspect-
     state: directory
   register: pxc_inspection_directory
+  when: pxc_other_mounts.stdout | trim == ''
 
 - name: Inspect the unmounted ext4 volume without writing or replaying its journal
+  when: pxc_other_mounts.stdout | trim == ''
   block:
     - name: Mount the volume read-only without journal replay
       ansible.builtin.command:

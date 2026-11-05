@@ -1,0 +1,32 @@
+---
+- name: Inspect the inactive data mount point
+  ansible.builtin.stat:
+    path: "{{ pxc_mysql_datadir }}"
+    follow: false
+    get_checksum: false
+    get_mime: false
+  register: pxc_inactive_mount
+
+- name: Require a regular directory or absent mount point
+  ansible.builtin.assert:
+    that:
+      - not pxc_inactive_mount.stat.exists or (pxc_inactive_mount.stat.isdir | default(false))
+      - not (pxc_inactive_mount.stat.islnk | default(false))
+    fail_msg: The PXC data mount point is not a regular directory.
+
+- name: Inspect files outside the data volume before any mount
+  ansible.builtin.find:
+    paths: "{{ pxc_mysql_datadir }}"
+    file_type: any
+    hidden: true
+    recurse: false
+  register: pxc_root_data_listing
+  when: pxc_inactive_mount.stat.exists
+
+- name: Refuse to hide existing root-disk data with a new mount
+  ansible.builtin.assert:
+    that:
+      - pxc_root_data_listing.matched | default(0) == 0
+      - pxc_root_data_listing.skipped_paths | default({}) | length == 0
+    fail_msg: Files exist outside the PXC data volume, or inspection failed; refusing deployment.
+

@@ -79,6 +79,30 @@
       {{ pxc_data_device }} contains an unexpected filesystem.
       Refusing to format it.
 
+- name: Read the data device identity before storage preparation
+  ansible.builtin.command:
+    argv: [lsblk, --nodeps, --noheadings, --output, "MAJ:MIN", "{{ pxc_data_device }}"]
+  register: pxc_volume_identity
+  changed_when: false
+
+- name: Inspect current volume mounts before any filesystem changes
+  ansible.builtin.command:
+    argv: [lsblk, --nodeps, --noheadings, --output, MOUNTPOINTS, "{{ pxc_data_device }}"]
+  register: pxc_install_mounts
+  changed_when: false
+
+- name: Refuse unknown or multiple data-volume mounts
+  ansible.builtin.assert:
+    that:
+      - >-
+        (pxc_install_mounts.stdout_lines | map('trim') | reject('equalto', '') | list)
+        in [[], [pxc_mysql_datadir], [pxc_do_automount_path]]
+    fail_msg: The data volume is mounted at an unknown or multiple locations.
+
+- name: Prepare an empty DigitalOcean automount for the MySQL data directory
+  ansible.builtin.include_tasks: prepare-automount.yml
+  when: pxc_install_mounts.stdout | trim == pxc_do_automount_path
+
 - name: Format an empty PXC data disk
   ansible.builtin.command:
     argv:
@@ -102,6 +126,10 @@
     line: "{{ pxc_data_device }} {{ pxc_mysql_datadir }} {{ pxc_data_filesystem }} defaults 0 2"
     state: present
 
+- name: Reload systemd after changing the persistent MySQL mount
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
 - name: Check MySQL data mount
   ansible.builtin.command:
     argv:
@@ -119,6 +147,13 @@
       - mount
       - "{{ pxc_mysql_datadir }}"
   when: pxc_mysql_mount_probe.rc != 0
+
+- name: Verify the mounted data volume before MySQL installation
+  ansible.builtin.import_role:
+    name: pxc_preflight
+    tasks_from: inspect-mounted
+  vars:
+    pxc_inspection_path: "{{ pxc_mysql_datadir }}"
 
 - name: Remove ext4 lost+found before MySQL initialization
   ansible.builtin.command:

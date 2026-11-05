@@ -1,0 +1,107 @@
+---
+- name: Require a complete fresh deployment before moving the provider automount
+  ansible.builtin.assert:
+    that:
+      - pxc_deployment_mode | default('') == 'fresh'
+      - pxc_data_filesystem_probe.stdout | trim == 'ext4'
+    fail_msg: Only a validated new deployment may move an empty DigitalOcean automount.
+
+- name: Recheck that MySQL has not been installed since preflight
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    get_checksum: false
+    get_mime: false
+  loop:
+    - /usr/bin/mysql
+    - /usr/sbin/mysqld
+  register: pxc_automount_mysql_binaries
+
+- name: Recheck that mysqld is not using the volume
+  ansible.builtin.command:
+    argv: [pgrep, -x, mysqld]
+  register: pxc_automount_mysql_process
+  changed_when: false
+  failed_when: pxc_automount_mysql_process.rc not in [0, 1]
+
+- name: Refuse automount changes after MySQL installation or startup
+  ansible.builtin.assert:
+    that:
+      - pxc_automount_mysql_binaries.results | map(attribute='stat.exists') | select('equalto', true) | list | length == 0
+      - pxc_automount_mysql_process.rc == 1
+    fail_msg: MySQL appeared after preflight; inspect the node before moving its mount.
+
+- name: Recheck the provider mount identity and contents before unmounting
+  ansible.builtin.import_role:
+    name: pxc_preflight
+    tasks_from: inspect-mounted
+  vars:
+    pxc_inspection_path: "{{ pxc_do_automount_path }}"
+
+- name: Refuse to move an automount containing data
+  ansible.builtin.assert:
+    that:
+      - pxc_data_empty | bool
+    fail_msg: The DigitalOcean automount is no longer empty; refusing to move it.
+
+- name: Recheck the unmounted MySQL directory before moving the volume
+  ansible.builtin.import_role:
+    name: pxc_preflight
+    tasks_from: inspect-inactive-mountpoint
+
+- name: Read the provider mount unit definition
+  ansible.builtin.command:
+    argv: [systemctl, show, --value, "--property={{ item }}", "{{ pxc_do_automount_unit }}"]
+  loop: [What, Where, FragmentPath]
+  register: pxc_automount_unit_definition
+  changed_when: false
+
+- name: Require the known provider mount unit at the expected location
+  ansible.builtin.assert:
+    that:
+      - pxc_automount_unit_definition.results[0].stdout | trim | length > 0
+      - pxc_automount_unit_definition.results[1].stdout | trim == pxc_do_automount_path
+      - pxc_automount_unit_definition.results[2].stdout | trim == '/etc/systemd/system/' ~ pxc_do_automount_unit
+    fail_msg: The alternate mount is not managed by the expected DigitalOcean systemd unit.
+
+- name: Resolve the block device referenced by the provider unit
+  ansible.builtin.command:
+    argv: [lsblk, --nodeps, --noheadings, --output, "MAJ:MIN", "{{ pxc_automount_unit_definition.results[0].stdout | trim }}"]
+  register: pxc_automount_unit_device
+  changed_when: false
+
+- name: Require the provider unit to reference the same data volume
+  ansible.builtin.assert:
+    that:
+      - pxc_automount_unit_device.stdout | trim == pxc_volume_identity.stdout | trim
+    fail_msg: The provider unit refers to a different block device.
+
+- name: Check for competing fstab management of the provider mount
+  ansible.builtin.command:
+    argv: [findmnt, --fstab, --noheadings, --mountpoint, "{{ pxc_do_automount_path }}"]
+  register: pxc_automount_fstab
+  changed_when: false
+  failed_when: pxc_automount_fstab.rc not in [0, 1]
+
+- name: Require systemd-only provider automount management
+  ansible.builtin.assert:
+    that:
+      - pxc_automount_fstab.rc == 1
+    fail_msg: The provider mount also has an fstab entry; resolve that conflict before deployment.
+
+- name: Disable and stop only the empty provider mount unit
+  ansible.builtin.systemd_service:
+    name: "{{ pxc_do_automount_unit }}"
+    enabled: false
+    state: stopped
+
+- name: Verify the volume is unmounted before configuring MySQL storage
+  ansible.builtin.command:
+    argv: [lsblk, --nodeps, --noheadings, --output, MOUNTPOINTS, "{{ pxc_data_device }}"]
+  register: pxc_automount_after_stop
+  changed_when: false
+
+- name: Refuse a still-mounted volume after stopping the provider unit
+  ansible.builtin.assert:
+    that:
+      - pxc_automount_after_stop.stdout | trim == ''
+    fail_msg: The data volume is still mounted; refusing to create a second mount.

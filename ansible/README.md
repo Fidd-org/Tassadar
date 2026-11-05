@@ -120,6 +120,13 @@ all three nodes:
 - renders `/etc/mysql/mysql.conf.d/mysqld.cnf` from
   `roles/pxc/templates/pxc.cnf.j2`.
 
+DigitalOcean may initially mount an empty volume at `/mnt/pxc_N_data`.
+Preflight inspects that known location without changing it. Only after all
+three nodes qualify as fresh does installation recheck emptiness and disable
+that volume's provider mount unit, then mount it at `/var/lib/mysql` through
+fstab. Unknown mounts, existing data or competing fstab entries stop deployment.
+The provider unit is retained disabled; the volume is not reformatted.
+
 The disk is mounted before the Percona package is installed, so MySQL creates
 its data directory on the dedicated disk from the beginning. There is no
 datadir migration or copy step. A disk with an unexpected filesystem causes

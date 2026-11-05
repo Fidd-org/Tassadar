@@ -7,6 +7,8 @@ pxc_root_user: root
 pxc_mysql_datadir: /var/lib/mysql
 pxc_data_device: "/dev/disk/by-id/scsi-0DO_Volume_{{ inventory_hostname }}-data"
 pxc_data_filesystem: ext4
+pxc_do_automount_path: "/mnt/{{ (inventory_hostname ~ '-data') | replace('-', '_') }}"
+pxc_do_automount_unit: "{{ pxc_do_automount_path.lstrip('/') | replace('/', '-') }}.mount"
 pxc_tls_files:
   - ca.pem
   - server-cert.pem

@@ -6,6 +6,9 @@ Classifies a complete Ubuntu 24.04 amd64/systemd PXC inventory before deployment
 - Requires the OpenTofu-created ext4 block volumes and expected device identity and filesystem root.
   Bind-mounted subdirectories and masking child mounts are rejected.
 - Inspects clean unmounted disks through private read-only/noload mounts.
+- Also inspects the known DigitalOcean /mnt/pxc_N_data mount without moving it.
+  Unknown/multiple mounts, wrong devices, subdirectory binds and hidden child
+  mounts are rejected. Existing data never qualifies for a fresh deployment.
 - Does not treat failed probes, nonempty lost+found or existing data as empty.
 - Allows fresh only when all three disks are empty and MySQL binaries/processes
   are absent; allows healthy only when all three nodes are ready/synced members

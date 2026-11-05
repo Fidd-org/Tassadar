@@ -64,57 +64,8 @@
     pxc_volume_mounted: "{{ pxc_mount_identity.rc == 0 }}"
     pxc_probe_status: {}
 
-- name: Refuse a different filesystem at the MySQL mount point
-  ansible.builtin.assert:
-    that:
-      - pxc_mount_identity.stdout | trim == pxc_volume_identity.stdout | trim
-    fail_msg: The MySQL data directory is mounted from a different device.
-  when: pxc_volume_mounted | bool
-
-- name: Read the root of the mounted filesystem
-  ansible.builtin.command:
-    argv: [findmnt, --raw, --noheadings, --output, FSROOT, --mountpoint, "{{ pxc_mysql_datadir }}"]
-  register: pxc_mount_root
-  changed_when: false
-  when: pxc_volume_mounted | bool
-
-- name: Refuse a bind-mounted subdirectory of the data volume
-  ansible.builtin.assert:
-    that:
-      - pxc_mount_root.stdout | trim == '/'
-    fail_msg: The MySQL mount must expose the root of the data volume, not a subdirectory.
-  when: pxc_volume_mounted | bool
-
-- name: Inspect nested mounts that could hide existing volume data
-  ansible.builtin.command:
-    argv: [findmnt, --raw, --noheadings, --submounts, --output, TARGET, --mountpoint, "{{ pxc_mysql_datadir }}"]
-  register: pxc_mount_tree
-  changed_when: false
-  when: pxc_volume_mounted | bool
-
-- name: Require the data filesystem to have no masking child mounts
-  ansible.builtin.assert:
-    that:
-      - pxc_mount_tree.stdout_lines | length == 1
-    fail_msg: Nested mounts hide parts of the data volume; inspect it before deployment.
-  when: pxc_volume_mounted | bool
-
-- name: Read the existing data mount options
-  ansible.builtin.command:
-    argv: [findmnt, --noheadings, --output, OPTIONS, --mountpoint, "{{ pxc_mysql_datadir }}"]
-  register: pxc_data_mount_options
-  changed_when: false
-  when: pxc_volume_mounted | bool
-
-- name: Require an existing data mount to be writable
-  ansible.builtin.assert:
-    that:
-      - "'rw' in (pxc_data_mount_options.stdout | trim).split(',')"
-    fail_msg: The PXC data volume is mounted read-only; repair the mount before deployment.
-  when: pxc_volume_mounted | bool
-
 - name: Inspect an already mounted data directory
-  ansible.builtin.include_tasks: read-data.yml
+  ansible.builtin.include_tasks: inspect-mounted.yml
   vars:
     pxc_inspection_path: "{{ pxc_mysql_datadir }}"
   when: pxc_volume_mounted | bool
