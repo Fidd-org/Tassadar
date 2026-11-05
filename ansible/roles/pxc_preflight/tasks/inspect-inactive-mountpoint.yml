@@ -29,4 +29,3 @@
       - pxc_root_data_listing.matched | default(0) == 0
       - pxc_root_data_listing.skipped_paths | default({}) | length == 0
     fail_msg: Files exist outside the PXC data volume, or inspection failed; refusing deployment.
-
