@@ -6,7 +6,7 @@ MySQL Exporter.
 
 ## GitHub deployment
 
-Manage infrastructure with operation apply provisions resources and then runs
+By default, Manage infrastructure with operation apply provisions resources and then runs
 SSH/Python checks, node-exporter.yml, prometheus.yml, grafana.yml and final
 monitoring checks in the same job. PXC deploy/verify is a separate Manage PXC
 workflow. No separate
@@ -31,6 +31,10 @@ The Summary reports each stage. A failed service check fails the deployment
 even if OpenTofu succeeded. Existing resources/data are kept for repair;
 fix the cause and rerun apply. Cancellation is not rollback, and interrupted
 Ansible runs may need cleanup as described under credentials below.
+
+For infrastructure only, disable deploy_monitoring in the workflow. That mode
+skips every Ansible invocation, including credential and connectivity checks.
+Install monitoring manually using the playbooks below when needed.
 
 ## Local run
 

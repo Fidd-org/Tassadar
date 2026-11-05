@@ -14,6 +14,11 @@ on:
           - destroy
         default: plan
         required: true
+      deploy_monitoring:
+        description: After apply, run Ansible SSH checks and deploy monitoring; disable for resources only
+        type: boolean
+        default: true
+        required: false
       destroy_confirmation:
         description: For destroy, type DESTROY to delete all VMs, PXC disks and monitoring data
         type: string
@@ -70,7 +75,7 @@ jobs:
 
       - name: Install Ansible for deployment and connectivity checks
         id: ansible
-        if: inputs.operation == 'apply' || inputs.operation == 'check'
+        if: inputs.operation == 'check' || (inputs.operation == 'apply' && inputs.deploy_monitoring)
         run: |
           ansible_venv="$RUNNER_TEMP/tassadar-ansible-venv"
           python3 -m venv "$ansible_venv"
@@ -128,7 +133,7 @@ jobs:
 
       - name: Prepare controller SSH identity
         id: ssh
-        if: inputs.operation == 'apply' || inputs.operation == 'check'
+        if: inputs.operation == 'check' || (inputs.operation == 'apply' && inputs.deploy_monitoring)
         env:
           ANSIBLE_SSH_PRIVATE_KEY: ${{ secrets.ANSIBLE_SSH_PRIVATE_KEY }}
           INFRA_SSH_PUBLIC_KEY: ${{ vars.INFRA_SSH_PUBLIC_KEY }}
@@ -136,7 +141,7 @@ jobs:
 
       - name: Validate monitoring credentials before changing infrastructure
         id: monitoring_credentials
-        if: inputs.operation == 'apply'
+        if: inputs.operation == 'apply' && inputs.deploy_monitoring
         working-directory: ansible
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
@@ -211,7 +216,7 @@ jobs:
 
       - name: Prepare the current controller inventory
         id: inventory
-        if: inputs.operation == 'apply' || inputs.operation == 'check'
+        if: inputs.operation == 'check' || (inputs.operation == 'apply' && inputs.deploy_monitoring)
         working-directory: ansible
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
@@ -221,7 +226,7 @@ jobs:
 
       - name: Check SSH and Python on every VM
         id: connectivity
-        if: inputs.operation == 'apply' || inputs.operation == 'check'
+        if: inputs.operation == 'check' || (inputs.operation == 'apply' && inputs.deploy_monitoring)
         working-directory: ansible
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
@@ -234,7 +239,7 @@ jobs:
 
       - name: Deploy Node Exporter on every VM
         id: node_exporter
-        if: inputs.operation == 'apply'
+        if: inputs.operation == 'apply' && inputs.deploy_monitoring
         working-directory: ansible
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
@@ -242,7 +247,7 @@ jobs:
 
       - name: Deploy Prometheus and check all scrape targets
         id: prometheus
-        if: inputs.operation == 'apply'
+        if: inputs.operation == 'apply' && inputs.deploy_monitoring
         working-directory: ansible
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
@@ -250,7 +255,7 @@ jobs:
 
       - name: Deploy Grafana and provision its data source and dashboard
         id: grafana
-        if: inputs.operation == 'apply'
+        if: inputs.operation == 'apply' && inputs.deploy_monitoring
         working-directory: ansible
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
@@ -259,7 +264,7 @@ jobs:
 
       - name: Verify final Prometheus targets and host metrics
         id: verify_prometheus
-        if: inputs.operation == 'apply'
+        if: inputs.operation == 'apply' && inputs.deploy_monitoring
         working-directory: ansible
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
@@ -267,7 +272,7 @@ jobs:
 
       - name: Verify final Grafana integration and dashboard
         id: verify_grafana
-        if: inputs.operation == 'apply'
+        if: inputs.operation == 'apply' && inputs.deploy_monitoring
         working-directory: ansible
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
@@ -310,6 +315,7 @@ jobs:
           CLEANUP_SSH_OUTCOME: ${{ steps.cleanup_ssh.outcome }}
           OPERATION: ${{ inputs.operation }}
           JOB_STATUS: ${{ job.status }}
+          DEPLOY_MONITORING: ${{ inputs.deploy_monitoring }}
           CONFIGURATION_OUTCOME: ${{ steps.configure.outcome }}
           INITIALIZATION_OUTCOME: ${{ steps.initialize.outcome }}
           VALIDATION_OUTCOME: ${{ steps.validate.outcome }}
@@ -328,6 +334,9 @@ jobs:
             echo '### Infrastructure operation'
             echo
             echo "Requested operation: $OPERATION"
+            if [[ "$OPERATION" == apply ]]; then
+              echo "Run Ansible and monitoring: $DEPLOY_MONITORING"
+            fi
             echo
             echo '| Step | Result |'
             echo '| --- | --- |'
@@ -383,7 +392,12 @@ jobs:
             elif [[ "$OPERATION" == check && "$CONNECTIVITY_OUTCOME" == success && "$CLEANUP_SSH_OUTCOME" == success && "$CLEANUP_INFRA_OUTCOME" == success ]]; then
               echo "**SSH and Python checks completed on $HOST_COUNT hosts.**"
               echo 'This does not verify database or monitoring service health.'
-            elif [[ "$OPERATION" == apply && "$APPLY_OUTCOME" == success &&
+            elif [[ "$OPERATION" == apply && "$DEPLOY_MONITORING" == false &&
+                    "$REQUEST_OUTCOME" == success && "$APPLY_OUTCOME" == success &&
+                    "$CLEANUP_SSH_OUTCOME" == success && "$CLEANUP_INFRA_OUTCOME" == success ]]; then
+              echo '**Infrastructure apply completed; Ansible was not requested.**'
+              echo 'VMs and disks are provisioned; SSH, services and monitoring have not been verified.'
+            elif [[ "$OPERATION" == apply && "$DEPLOY_MONITORING" == true && "$APPLY_OUTCOME" == success &&
                     "$ANSIBLE_OUTCOME" == success && "$MONITORING_CREDENTIALS_OUTCOME" == success &&
                     "$SSH_OUTCOME" == success && "$INVENTORY_OUTCOME" == success &&
                     "$CONNECTIVITY_OUTCOME" == success && "$NODE_EXPORTER_OUTCOME" == success &&

@@ -67,7 +67,7 @@ Open **Actions → Manage infrastructure → Run workflow** on the default branc
 | Operation | Result |
 | --- | --- |
 | `plan` | Preview infrastructure changes without applying them |
-| `apply` | Apply a fresh plan, install monitoring and verify it |
+| `apply` | Apply a fresh plan; optionally run Ansible and monitoring (enabled by default) |
 | `check` | Check SSH/Python access to all seven existing VMs |
 | `destroy-plan` | Preview full infrastructure deletion without applying it |
 | `destroy` | Apply a fresh destroy plan and verify the remote state is empty |
@@ -81,11 +81,17 @@ passwords or DigitalOcean token. Both destroy operations use the DigitalOcean
 token, Spaces credentials and public-key Variable; no private SSH key or
 service passwords are needed.
 
-Apply runs this sequence:
+For resources only, uncheck **deploy_monitoring** when running apply. This
+skips all Ansible commands, SSH key preparation and monitoring/password checks.
+Run Ansible yourself afterwards; a successful resources-only apply does not
+verify SSH, the database or monitoring. The `check` operation still runs Ansible
+regardless of this checkbox.
+
+By default, apply runs this sequence:
 
 `OpenTofu → inventory → SSH check → Node Exporter → Prometheus → Grafana → verification`
 
-Check the run's **Summary** for each stage. Apply succeeds after host metrics
+Check the run's **Summary** for each stage. With monitoring enabled, apply succeeds after host metrics
 and the Grafana datasource/dashboard are verified. It does not install PXC
 or require `PXC_ROOT_PASSWORD`. A failed or canceled deploy does not roll back
 changes or delete resources automatically.
