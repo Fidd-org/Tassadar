@@ -3,6 +3,7 @@
 DigitalOcean infrastructure managed with OpenTofu and Ansible.
 GitHub Actions manages infrastructure with monitoring and deploys PXC separately.
 
+
 ## What is included
 
 - Seven VMs: bastion, three PXC nodes, FlowerCA, Prometheus and Grafana.
