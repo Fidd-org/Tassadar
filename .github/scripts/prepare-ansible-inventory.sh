@@ -17,5 +17,5 @@ jq -n \
   '{inventory_ssh_private_key_path: $key, inventory_known_hosts_path: $hosts,
     inventory_output_path: $inventory, inventory_ssh_config_path: $config,
     connectivity_summary_path: $summary, pxc_summary_path: $pxc, inventory_host_key_checking: "accept-new"}' > "$runtime_directory/inventory-vars.json"
-ansible-playbook -i localhost, playbooks/prepare-inventory.yml \
+ansible-playbook -i localhost, playbooks/connectivity/prepare-inventory.yml \
   -e "@$runtime_directory/inventory-vars.json"

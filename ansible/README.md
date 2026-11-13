@@ -1,10 +1,16 @@
-# Controller inventory
+# Ansible playbooks
+
+- [connectivity/](playbooks/connectivity/) generates inventory and checks SSH connectivity.
+- [monitoring/](playbooks/monitoring/) installs and verifies Node Exporter, Prometheus and Grafana.
+- [pxc/](playbooks/pxc/) deploys and verifies PXC and contains the recovery playbooks.
+
+## Controller inventory
 
 Before deployment, verification, or recovery, initialize the OpenTofu backend
 and run from `ansible/`:
 
 ```bash
-ansible-playbook -i localhost, playbooks/prepare-inventory.yml \
+ansible-playbook -i localhost, playbooks/connectivity/prepare-inventory.yml \
   -e inventory_ssh_private_key_path="$HOME/.ssh/id_tassadar" \
   -e inventory_known_hosts_path="$HOME/.ssh/known_hosts"
 ```
@@ -51,7 +57,7 @@ The default inventory is now `inventory.yml`.
 After preparing the complete inventory, run:
 
 ```bash
-ansible-playbook playbooks/check-connectivity.yml
+ansible-playbook playbooks/connectivity/check-connectivity.yml
 ```
 
 It requires all seven expected hosts and role groups, waits for SSH/Python
@@ -80,7 +86,7 @@ API and Grafana credentials are not passed. Empty/missing outputs fail before
 remote actions. Both workflows share concurrency group tassadar-production.
 Recovery and the outage test remain separate manual playbooks.
 
-# playbooks/pxc.yml
+# playbooks/pxc/pxc.yml
 
 This playbook installs and configures a three-node Percona XtraDB Cluster. It
 expects the inventory group `pxc` to contain exactly `pxc-1`, `pxc-2`, and
@@ -197,9 +203,9 @@ even when inventory is outside the repository.
 Use the complete playbook for deployment. For a healthy running cluster:
 
 ```bash
-ansible-playbook playbooks/pxc.yml --tags verify
+ansible-playbook playbooks/pxc/pxc.yml --tags verify
 # Or:
-ansible-playbook playbooks/pxc-verify.yml
+ansible-playbook playbooks/pxc/pxc-verify.yml
 ```
 
 Partial `install`/`cluster` runs, `--skip-tags`, `--limit` and
@@ -218,7 +224,7 @@ Use the dedicated recovery playbook only when exactly one PXC node is down and
 the other two nodes form a healthy two-node Primary component:
 
 ```bash
-ansible-playbook playbooks/pxc-recover-node.yml \
+ansible-playbook playbooks/pxc/pxc-recover-node.yml \
   -e pxc_recovery_node=pxc-3 \
   -e pxc_recovery_allow_sst=true
 ```
@@ -226,7 +232,7 @@ ansible-playbook playbooks/pxc-recover-node.yml \
 Optionally select either healthy survivor as the TLS source:
 
 ```bash
-ansible-playbook playbooks/pxc-recover-node.yml \
+ansible-playbook playbooks/pxc/pxc-recover-node.yml \
   -e pxc_recovery_node=pxc-3 \
   -e pxc_recovery_donor=pxc-2 \
   -e pxc_recovery_allow_sst=true
@@ -271,7 +277,7 @@ verification resets only the dedicated `percona.example` test table.
 On an already installed, healthy, dedicated test cluster, run from `ansible/`:
 
 ```bash
-ansible-playbook playbooks/pxc-test-recovery.yml \
+ansible-playbook playbooks/pxc/pxc-test-recovery.yml \
   -e pxc_recovery_node=pxc-3 \
   -e pxc_test_allow_node_stop=true \
   -e pxc_recovery_allow_sst=true

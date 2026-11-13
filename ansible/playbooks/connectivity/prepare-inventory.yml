@@ -4,11 +4,11 @@
   connection: local
   gather_facts: false
   vars:
-    inventory_tofu_directory: "{{ playbook_dir }}/../../tofu"
+    inventory_tofu_directory: "{{ playbook_dir }}/../../../tofu"
     inventory_tofu_binary: tofu
     inventory_host_key_checking: "yes"
-    inventory_output_path: "{{ playbook_dir }}/../inventory.yml"
-    inventory_ssh_config_path: "{{ playbook_dir }}/../.generated/ssh_config"
+    inventory_output_path: "{{ playbook_dir }}/../../inventory.yml"
+    inventory_ssh_config_path: "{{ playbook_dir }}/../../.generated/ssh_config"
     inventory_ipv4_pattern: '^(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])$'
   tasks:
     - name: Require the current controller SSH paths
@@ -187,12 +187,12 @@
 
     - name: Render SSH access through the bastion
       ansible.builtin.template:
-        src: ../templates/ssh_config.j2
+        src: "{{ playbook_dir }}/../../templates/ssh_config.j2"
         dest: "{{ inventory_config_file }}"
         mode: "0600"
 
     - name: Render the inventory for the current controller
       ansible.builtin.template:
-        src: ../templates/inventory.yml.j2
+        src: "{{ playbook_dir }}/../../templates/inventory.yml.j2"
         dest: "{{ inventory_destination }}"
         mode: "0600"

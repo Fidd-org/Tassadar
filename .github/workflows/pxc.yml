@@ -76,7 +76,7 @@ jobs:
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
           PXC_ROOT_PASSWORD: ${{ secrets.PXC_ROOT_PASSWORD }}
-        run: ansible-playbook -i localhost, playbooks/check-pxc-credentials.yml -e pxc_require_runtime_password=true
+        run: ansible-playbook -i localhost, playbooks/pxc/check-pxc-credentials.yml -e pxc_require_runtime_password=true
 
       - name: Initialize the existing S3 state backend
         id: initialize
@@ -122,7 +122,7 @@ jobs:
           set -euo pipefail
           runtime_directory="$RUNNER_TEMP/tassadar-ansible"
           pxc_exit=0
-          ansible-playbook -i "$runtime_directory/inventory.yml" playbooks/pxc.yml \
+          ansible-playbook -i "$runtime_directory/inventory.yml" playbooks/pxc/pxc.yml \
             -e "@$runtime_directory/inventory-vars.json" -e pxc_require_runtime_password=true || pxc_exit=$?
           if [[ -f "$runtime_directory/pxc-deployment.json" ]]; then
             deployment_mode="$(jq -er '.mode | select(. == "fresh" or . == "healthy")' "$runtime_directory/pxc-deployment.json")"
@@ -142,7 +142,7 @@ jobs:
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
           PXC_ROOT_PASSWORD: ${{ secrets.PXC_ROOT_PASSWORD }}
-        run: ansible-playbook -i "$RUNNER_TEMP/tassadar-ansible/inventory.yml" playbooks/pxc-verify.yml -e pxc_require_runtime_password=true
+        run: ansible-playbook -i "$RUNNER_TEMP/tassadar-ansible/inventory.yml" playbooks/pxc/pxc-verify.yml -e pxc_require_runtime_password=true
 
       - name: Remove controller SSH files and generated inventory
         id: cleanup_ssh

@@ -1,4 +1,5 @@
 name: Manage infrastructure
+run-name: "Manage infrastructure | ${{ inputs.operation }}"
 
 on:
   workflow_dispatch:
@@ -146,7 +147,7 @@ jobs:
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
           GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
-        run: ansible-playbook -i localhost, playbooks/check-monitoring-credentials.yml
+        run: ansible-playbook -i localhost, playbooks/monitoring/check-monitoring-credentials.yml
 
       - name: Check formatting
         run: tofu fmt -check -recursive
@@ -233,7 +234,7 @@ jobs:
         run: |
           set -euo pipefail
           runtime_directory="$RUNNER_TEMP/tassadar-ansible"
-          ansible-playbook -i "$runtime_directory/inventory.yml" playbooks/check-connectivity.yml \
+          ansible-playbook -i "$runtime_directory/inventory.yml" playbooks/connectivity/check-connectivity.yml \
             -e "@$runtime_directory/inventory-vars.json"
           echo "host_count=$(jq 'length' "$runtime_directory/connectivity.json")" >> "$GITHUB_OUTPUT"
 
@@ -243,7 +244,7 @@ jobs:
         working-directory: ansible
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
-        run: ansible-playbook -i "$RUNNER_TEMP/tassadar-ansible/inventory.yml" playbooks/node-exporter.yml
+        run: ansible-playbook -i "$RUNNER_TEMP/tassadar-ansible/inventory.yml" playbooks/monitoring/node-exporter.yml
 
       - name: Deploy Prometheus and check all scrape targets
         id: prometheus
@@ -251,7 +252,7 @@ jobs:
         working-directory: ansible
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
-        run: ansible-playbook -i "$RUNNER_TEMP/tassadar-ansible/inventory.yml" playbooks/prometheus.yml
+        run: ansible-playbook -i "$RUNNER_TEMP/tassadar-ansible/inventory.yml" playbooks/monitoring/prometheus.yml
 
       - name: Deploy Grafana and provision its data source and dashboard
         id: grafana
@@ -260,7 +261,7 @@ jobs:
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
           GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
-        run: ansible-playbook -i "$RUNNER_TEMP/tassadar-ansible/inventory.yml" playbooks/grafana.yml
+        run: ansible-playbook -i "$RUNNER_TEMP/tassadar-ansible/inventory.yml" playbooks/monitoring/grafana.yml
 
       - name: Verify final Prometheus targets and host metrics
         id: verify_prometheus
@@ -268,7 +269,7 @@ jobs:
         working-directory: ansible
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
-        run: ansible-playbook -i "$RUNNER_TEMP/tassadar-ansible/inventory.yml" playbooks/prometheus-verify.yml
+        run: ansible-playbook -i "$RUNNER_TEMP/tassadar-ansible/inventory.yml" playbooks/monitoring/prometheus-verify.yml
 
       - name: Verify final Grafana integration and dashboard
         id: verify_grafana
@@ -277,7 +278,7 @@ jobs:
         env:
           ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
           GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
-        run: ansible-playbook -i "$RUNNER_TEMP/tassadar-ansible/inventory.yml" playbooks/grafana-verify.yml
+        run: ansible-playbook -i "$RUNNER_TEMP/tassadar-ansible/inventory.yml" playbooks/monitoring/grafana-verify.yml
 
       - name: Remove temporary configuration and plan
         id: cleanup_infra

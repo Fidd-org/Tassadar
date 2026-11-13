@@ -19,7 +19,9 @@ pxc_tls_private_files:
   - server-key.pem
   - client-key.pem
 
-pxc_generated_password_dir: "{{ inventory_dir | default(playbook_dir ~ '/..', true) }}/.generated"
+pxc_generated_password_dir: >-
+  {{ (inventory_dir if inventory_dir | default('', true) is ansible.builtin.abs
+      else playbook_dir ~ '/../..') ~ '/.generated' }}
 pxc_root_password: >-
   {{ lookup('ansible.builtin.env', 'PXC_ROOT_PASSWORD')
      if pxc_require_runtime_password | default(false) | bool

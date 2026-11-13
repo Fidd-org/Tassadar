@@ -42,8 +42,8 @@ Apply the infrastructure first, verify its SSH host keys, and prepare inventory
 as described in [README.md](README.md#controller-inventory). From ansible/:
 
 ```bash
-ansible-playbook playbooks/node-exporter.yml
-ansible-playbook playbooks/prometheus.yml
+ansible-playbook playbooks/monitoring/node-exporter.yml
+ansible-playbook playbooks/monitoring/prometheus.yml
 ```
 
 The first playbook installs Node Exporter on all seven managed VMs, including
@@ -54,7 +54,7 @@ fails unless every expected exporter is UP and host metrics are queryable.
 Recheck without installing or restarting services:
 
 ```bash
-ansible-playbook playbooks/prometheus-verify.yml
+ansible-playbook playbooks/monitoring/prometheus-verify.yml
 ```
 
 Use the complete generated inventory. A deployment limited to one exporter
@@ -153,7 +153,7 @@ After Node Exporter and Prometheus, install Grafana on its own VM:
 ```bash
 read -r -s -p "Grafana admin password: " GRAFANA_ADMIN_PASSWORD
 export GRAFANA_ADMIN_PASSWORD
-ansible-playbook playbooks/grafana.yml
+ansible-playbook playbooks/monitoring/grafana.yml
 unset GRAFANA_ADMIN_PASSWORD
 ```
 
@@ -214,7 +214,7 @@ Full infrastructure destroy deletes the VM disk, database and key.
 With GRAFANA_ADMIN_PASSWORD supplied as above:
 
 ```bash
-ansible-playbook playbooks/grafana-verify.yml
+ansible-playbook playbooks/monitoring/grafana-verify.yml
 ```
 
 The same verification runs at the end of installation. It checks database
