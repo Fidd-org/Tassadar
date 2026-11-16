@@ -48,9 +48,9 @@
 - name: Read the Galera cluster identity on this node
   ansible.builtin.set_fact:
     mysql_exporter_cluster_id: >-
-      {{ mysql_exporter_pxc_status.stdout_lines
-         | select('match', '^wsrep_cluster_state_uuid\\s+') | list
-         | first | default('') | regex_replace('^wsrep_cluster_state_uuid\\s+', '') }}
+      {{ (mysql_exporter_pxc_status.stdout_lines
+          | select('match', '^wsrep_cluster_state_uuid') | first | default('')).split()
+         | last | default('') }}
 
 - name: Require all nodes to be members of the same Galera cluster
   ansible.builtin.assert:
