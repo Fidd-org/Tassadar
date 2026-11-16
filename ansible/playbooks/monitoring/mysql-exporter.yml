@@ -12,7 +12,7 @@
           - groups.get('grafana', []) | length == 1
           - ansible_limit | default('') | length == 0
           - not ansible_check_mode
-          - ansible_run_tags == ['all']
+          - ansible_run_tags | list == ['all']
           - ansible_skip_tags | default([]) | length == 0
         fail_msg: Use the complete inventory and run this playbook without limits, tags, or check mode.
 
