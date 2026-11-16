@@ -230,3 +230,29 @@ idempotence checks, or testing the operator's SSH tunnel.
 
 Grafana references: [release metadata and checksum](https://grafana.com/api/grafana/versions/13.2.4),
 [provisioning](https://grafana.com/docs/grafana/latest/administration/provisioning/).
+
+## MySQL and Galera metrics
+
+After deploying PXC and the base monitoring stack, use the full inventory and
+the current PXC root password. Supply a separate, stable
+`MYSQL_EXPORTER_PASSWORD` (24–128 alphanumeric characters) through a protected
+environment variable or Ansible variable. Store it in your password manager
+and reuse it on repeat runs. The playbook creates the account on pxc-1 once
+and Galera replicates it. An existing account's password is preserved.
+
+In GitHub Actions, add `MYSQL_EXPORTER_PASSWORD` as a repository secret,
+then run **Manage PXC → monitor**. It uses the existing `PXC_ROOT_PASSWORD`
+secret to create or check the exporter account and `GRAFANA_ADMIN_PASSWORD`
+to verify dashboard provisioning.
+
+For a local run, go to `ansible/` with the passwords provided securely:
+
+```bash
+ansible-playbook playbooks/monitoring/mysql-exporter.yml
+```
+
+The exporter reads `SHOW GLOBAL STATUS` over the local MySQL socket with a
+dedicated account that has no database grants. It listens on private port
+9104, reachable from Prometheus by the existing firewall rule. The playbook
+adds three scrape targets, verifies MySQL reachability and Galera health in
+Prometheus, and provisions **Tassadar — PXC** in the existing Grafana folder.

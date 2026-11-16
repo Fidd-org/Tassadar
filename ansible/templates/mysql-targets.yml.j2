@@ -1,0 +1,5 @@
+{% for host in groups['pxc'] | sort %}
+- targets: [{{ ((hostvars[host].mysql_exporter_address | default(hostvars[host].ansible_host)) ~ ':9104') | to_json }}]
+  labels:
+    instance: {{ host | to_json }}
+{% endfor %}

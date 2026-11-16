@@ -4,11 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       operation:
-        description: Deploy PXC on existing VMs or verify cluster health and replication
+        description: Deploy PXC, verify replication, or install MySQL monitoring
         type: choice
         options:
           - deploy
           - verify
+          - monitor
         default: verify
         required: true
 
@@ -45,8 +46,8 @@ jobs:
         run: |
           set -euo pipefail
           case "$OPERATION" in
-            deploy|verify) ;;
-            *) echo '::error::Choose deploy or verify'; exit 1 ;;
+            deploy|verify|monitor) ;;
+            *) echo '::error::Choose deploy, verify, or monitor'; exit 1 ;;
           esac
 
       - name: Install OpenTofu for reading state outputs
@@ -144,6 +145,16 @@ jobs:
           PXC_ROOT_PASSWORD: ${{ secrets.PXC_ROOT_PASSWORD }}
         run: ansible-playbook -i "$RUNNER_TEMP/tassadar-ansible/inventory.yml" playbooks/pxc/pxc-verify.yml -e pxc_require_runtime_password=true
 
+      - name: Install MySQL Exporter and verify Galera metrics
+        id: monitor
+        if: inputs.operation == 'monitor'
+        env:
+          ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
+          PXC_ROOT_PASSWORD: ${{ secrets.PXC_ROOT_PASSWORD }}
+          MYSQL_EXPORTER_PASSWORD: ${{ secrets.MYSQL_EXPORTER_PASSWORD }}
+          GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
+        run: ansible-playbook -i "$RUNNER_TEMP/tassadar-ansible/inventory.yml" playbooks/monitoring/mysql-exporter.yml -e pxc_require_runtime_password=true
+
       - name: Remove controller SSH files and generated inventory
         id: cleanup_ssh
         if: always()
@@ -164,6 +175,7 @@ jobs:
           PXC_OUTCOME: ${{ steps.pxc.outcome }}
           PXC_DEPLOYMENT_MODE: ${{ steps.pxc.outputs.deployment_mode }}
           VERIFY_OUTCOME: ${{ steps.verify_pxc.outcome }}
+          MONITOR_OUTCOME: ${{ steps.monitor.outcome }}
           CLEANUP_OUTCOME: ${{ steps.cleanup_ssh.outcome }}
         run: |
           {
@@ -182,6 +194,7 @@ jobs:
             echo "| PXC SSH/Python through bastion | $CONNECTIVITY_OUTCOME |"
             echo "| PXC deployment (${PXC_DEPLOYMENT_MODE:-not-classified}) | $PXC_OUTCOME |"
             echo "| Standalone health and replication | $VERIFY_OUTCOME |"
+            echo "| MySQL Exporter, Prometheus and PXC dashboard | $MONITOR_OUTCOME |"
             echo "| Controller files cleanup | $CLEANUP_OUTCOME |"
             echo
             if [[ "$JOB_STATUS" == cancelled ]]; then
@@ -192,8 +205,13 @@ jobs:
                     "$INVENTORY_OUTCOME" == success && "$CONNECTIVITY_OUTCOME" == success &&
                     "$CLEANUP_OUTCOME" == success ]] &&
                  { [[ "$OPERATION" == deploy && "$PXC_OUTCOME" == success ]] ||
-                   [[ "$OPERATION" == verify && "$VERIFY_OUTCOME" == success ]]; }; then
-              echo '**PXC operation completed; health and cross-node replication verified.**'
+                   [[ "$OPERATION" == verify && "$VERIFY_OUTCOME" == success ]] ||
+                   [[ "$OPERATION" == monitor && "$MONITOR_OUTCOME" == success ]]; }; then
+              if [[ "$OPERATION" == monitor ]]; then
+                echo '**MySQL monitoring enabled. Prometheus verified all three PXC nodes and the PXC dashboard was provisioned.**'
+              else
+                echo '**PXC operation completed; health and cross-node replication verified.**'
+              fi
             else
               echo '**PXC operation did not complete.** Inspect the failed step; existing resources and data are retained.'
             fi

@@ -1,0 +1,111 @@
+---
+- name: Require the complete PXC and monitoring inventory
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Check that the operation includes all required hosts
+      ansible.builtin.assert:
+        that:
+          - groups.get('pxc', []) | sort == ['pxc-1', 'pxc-2', 'pxc-3']
+          - groups.get('prometheus', []) | length == 1
+          - groups.get('grafana', []) | length == 1
+          - ansible_limit | default('') | length == 0
+          - not ansible_check_mode
+          - ansible_run_tags == ['all']
+          - ansible_skip_tags | default([]) | length == 0
+        fail_msg: Use the complete inventory and run this playbook without limits, tags, or check mode.
+
+- name: Install MySQL Exporter on the healthy PXC cluster
+  hosts: pxc
+  become: true
+  any_errors_fatal: true
+  pre_tasks:
+    - name: Load shared PXC credential defaults
+      ansible.builtin.import_role:
+        name: pxc_config
+        public: true
+    - name: Validate PXC credentials
+      ansible.builtin.import_role:
+        name: pxc_preflight
+        tasks_from: credentials
+  roles:
+    - mysql_exporter
+
+- name: Configure Prometheus and verify MySQL metrics from every PXC node
+  hosts: prometheus
+  become: true
+  any_errors_fatal: true
+  roles:
+    - prometheus
+  tasks:
+    - name: Register the three exporter endpoints
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../../templates/mysql-targets.yml.j2"
+        dest: /etc/prometheus/mysql-targets.yml
+        owner: root
+        group: prometheus
+        mode: "0640"
+
+    - name: Verify live MySQL and Galera metrics from all expected nodes
+      ansible.builtin.uri:
+        url: "http://{{ ansible_host }}:9090/api/v1/query?query={{ item.query | urlencode }}"
+        use_proxy: false
+        return_content: true
+      register: mysql_metrics
+      changed_when: false
+      until:
+        - mysql_metrics.status | default(0) == 200
+        - mysql_metrics.json.status | default('') == 'success'
+        - >-
+          (mysql_metrics.json.data.result | default([]) | map(attribute='metric.instance') | sort | list)
+          == (groups['pxc'] | sort)
+        - >-
+          (mysql_metrics.json.data.result | default([]) | map(attribute='value') | map('last') | unique | list)
+          == [item.expected]
+      loop:
+        - {query: 'up{job="mysql"}', expected: "1"}
+        - {query: 'mysql_up{job="mysql"}', expected: "1"}
+        - {query: 'mysql_global_status_wsrep_cluster_size{job="mysql"}', expected: "3"}
+        - {query: 'mysql_global_status_wsrep_cluster_status{job="mysql"}', expected: "1"}
+        - {query: 'mysql_global_status_wsrep_local_state{job="mysql"}', expected: "4"}
+        - {query: 'mysql_global_status_wsrep_ready{job="mysql"}', expected: "1"}
+      retries: 12
+      delay: 5
+
+- name: Provision the PXC dashboard in Grafana
+  hosts: grafana
+  become: true
+  any_errors_fatal: true
+  pre_tasks:
+    - name: Load Grafana defaults and validate the current admin password
+      ansible.builtin.import_role:
+        name: grafana
+        tasks_from: credentials
+        public: true
+  tasks:
+    - name: Install PXC dashboard in the existing Grafana dashboard provider
+      ansible.builtin.copy:
+        src: ../../roles/grafana/files/tassadar-pxc.json
+        dest: /etc/grafana/dashboards/tassadar-pxc.json
+        owner: root
+        group: grafana
+        mode: "0640"
+
+    - name: Verify that Grafana provisioned the PXC dashboard
+      ansible.builtin.uri:
+        url: "http://{{ grafana_address }}:3000/api/dashboards/uid/tassadar-pxc"
+        url_username: admin
+        url_password: "{{ grafana_admin_password }}"
+        force_basic_auth: true
+        use_proxy: false
+        return_content: true
+      register: mysql_exporter_dashboard
+      changed_when: false
+      until:
+        - mysql_exporter_dashboard.status | default(0) == 200
+        - mysql_exporter_dashboard.json.dashboard.uid | default('') == 'tassadar-pxc'
+        - mysql_exporter_dashboard.json.meta.provisioned | default(false) | bool
+      retries: "{{ grafana_verify_retries }}"
+      delay: "{{ grafana_verify_delay }}"
+      no_log: true

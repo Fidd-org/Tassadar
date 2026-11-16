@@ -1,0 +1,204 @@
+---
+- name: Validate exporter platform and private listen address
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.distribution == 'Ubuntu'
+      - ansible_facts.distribution_major_version == '24'
+      - ansible_facts.architecture == 'x86_64'
+      - ansible_facts.service_mgr == 'systemd'
+      - mysql_exporter_address is match('^(10\\.|192\\.168\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.)')
+      - mysql_exporter_address in ansible_facts.all_ipv4_addresses
+
+- name: Validate the exporter password without exposing it
+  ansible.builtin.assert:
+    that:
+      - mysql_exporter_password is string
+      - mysql_exporter_password is match('^[A-Za-z0-9]{24,128}\\Z')
+      - mysql_exporter_password != pxc_root_password
+    fail_msg: Set MYSQL_EXPORTER_PASSWORD to a separate alphanumeric password with 24 to 128 characters.
+  no_log: true
+
+- name: Read PXC status locally with the cluster administrator
+  ansible.builtin.command:
+    argv:
+      - mysql
+      - "--user={{ pxc_root_user }}"
+      - --protocol=socket
+      - "--socket={{ mysql_exporter_socket }}"
+      - --batch
+      - --skip-column-names
+      - >-
+        --execute=SHOW GLOBAL STATUS WHERE Variable_name IN
+        ('wsrep_cluster_size','wsrep_cluster_status','wsrep_local_state_comment','wsrep_ready','wsrep_cluster_state_uuid')
+  environment:
+    MYSQL_PWD: "{{ pxc_root_password }}"
+  register: mysql_exporter_pxc_status
+  changed_when: false
+  no_log: true
+
+- name: Require every PXC node to be synced before creating the exporter account
+  ansible.builtin.assert:
+    that:
+      - "'wsrep_cluster_size\\t3' in mysql_exporter_pxc_status.stdout_lines"
+      - "'wsrep_cluster_status\\tPrimary' in mysql_exporter_pxc_status.stdout_lines"
+      - "'wsrep_local_state_comment\\tSynced' in mysql_exporter_pxc_status.stdout_lines"
+      - "'wsrep_ready\\tON' in mysql_exporter_pxc_status.stdout_lines"
+    fail_msg: Deploy and verify all three PXC nodes before installing MySQL Exporter.
+
+- name: Read the Galera cluster identity on this node
+  ansible.builtin.set_fact:
+    mysql_exporter_cluster_id: >-
+      {{ mysql_exporter_pxc_status.stdout_lines
+         | select('match', '^wsrep_cluster_state_uuid\\s+') | list
+         | first | default('') | regex_replace('^wsrep_cluster_state_uuid\\s+', '') }}
+
+- name: Require all nodes to be members of the same Galera cluster
+  ansible.builtin.assert:
+    that:
+      - mysql_exporter_cluster_id is match('^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+      - mysql_exporter_cluster_id != '00000000-0000-0000-0000-000000000000'
+      - groups['pxc'] | map('extract', hostvars, 'mysql_exporter_cluster_id') | unique | list | length == 1
+  run_once: true
+
+- name: Check whether the exporter account already exists
+  ansible.builtin.command:
+    argv:
+      - mysql
+      - "--user={{ pxc_root_user }}"
+      - --protocol=socket
+      - "--socket={{ mysql_exporter_socket }}"
+      - --batch
+      - --skip-column-names
+      - --execute=SELECT EXISTS(SELECT 1 FROM mysql.user WHERE User='tassadar_exporter' AND Host='localhost')
+  environment:
+    MYSQL_PWD: "{{ pxc_root_password }}"
+  register: mysql_exporter_account_exists
+  changed_when: false
+  run_once: true
+  delegate_to: pxc-1
+  no_log: true
+
+- name: Create the local exporter account once through Galera
+  ansible.builtin.command:
+    argv:
+      - mysql
+      - "--user={{ pxc_root_user }}"
+      - --protocol=socket
+      - "--socket={{ mysql_exporter_socket }}"
+    stdin: >-
+      CREATE USER IF NOT EXISTS 'tassadar_exporter'@'localhost'
+      IDENTIFIED BY '{{ mysql_exporter_password }}' WITH MAX_USER_CONNECTIONS 3;
+  environment:
+    MYSQL_PWD: "{{ pxc_root_password }}"
+  run_once: true
+  delegate_to: pxc-1
+  when: mysql_exporter_account_exists.stdout | trim == '0'
+  no_log: true
+
+- name: Verify the exporter credential on every node before changing services
+  ansible.builtin.command:
+    argv:
+      - mysql
+      - --user=tassadar_exporter
+      - --protocol=socket
+      - "--socket={{ mysql_exporter_socket }}"
+      - --execute=SHOW GLOBAL STATUS LIKE 'wsrep_cluster_size'
+  environment:
+    MYSQL_PWD: "{{ mysql_exporter_password }}"
+  changed_when: false
+  no_log: true
+
+- name: Create the exporter group
+  ansible.builtin.group:
+    name: mysqld_exporter
+    system: true
+
+- name: Create the unprivileged exporter service user
+  ansible.builtin.user:
+    name: mysqld_exporter
+    group: mysqld_exporter
+    system: true
+    create_home: false
+    home: /nonexistent
+    shell: /usr/sbin/nologin
+
+- name: Create release directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /var/cache/tassadar
+    - /opt/tassadar
+
+- name: Download the pinned MySQL Exporter archive
+  ansible.builtin.get_url:
+    url: "https://github.com/prometheus/mysqld_exporter/releases/download/v{{ mysql_exporter_version }}/{{ mysql_exporter_release }}.tar.gz"
+    dest: "/var/cache/tassadar/{{ mysql_exporter_release }}.tar.gz"
+    checksum: "{{ mysql_exporter_checksum }}"
+    owner: root
+    group: root
+    mode: "0644"
+  register: mysql_exporter_download
+  until: mysql_exporter_download is succeeded
+  retries: 3
+  delay: 5
+
+- name: Extract the verified MySQL Exporter archive
+  ansible.builtin.unarchive:
+    src: "/var/cache/tassadar/{{ mysql_exporter_release }}.tar.gz"
+    dest: /opt/tassadar
+    remote_src: true
+    creates: "/opt/tassadar/{{ mysql_exporter_release }}/mysqld_exporter"
+    owner: root
+    group: root
+
+- name: Install MySQL Exporter
+  ansible.builtin.copy:
+    src: "/opt/tassadar/{{ mysql_exporter_release }}/mysqld_exporter"
+    dest: /usr/local/bin/mysqld_exporter
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0755"
+  notify: Restart MySQL Exporter
+
+- name: Create the protected exporter configuration directory
+  ansible.builtin.file:
+    path: /etc/mysqld_exporter
+    state: directory
+    owner: root
+    group: mysqld_exporter
+    mode: "0750"
+
+- name: Configure the exporter connection to the local MySQL socket
+  ansible.builtin.template:
+    src: my.cnf.j2
+    dest: /etc/mysqld_exporter/my.cnf
+    owner: root
+    group: mysqld_exporter
+    mode: "0640"
+  no_log: true
+  diff: false
+  notify: Restart MySQL Exporter
+
+- name: Configure the exporter service
+  ansible.builtin.template:
+    src: mysqld_exporter.service.j2
+    dest: /etc/systemd/system/mysqld_exporter.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart MySQL Exporter
+
+- name: Apply exporter configuration changes
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start MySQL Exporter
+  ansible.builtin.systemd_service:
+    name: mysqld_exporter
+    enabled: true
+    state: started
+    daemon_reload: true

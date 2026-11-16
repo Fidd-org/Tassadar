@@ -1,0 +1,7 @@
+---
+mysql_exporter_version: "0.21.0"
+mysql_exporter_checksum: "sha256:dc38d4173ab07d1e2ec8699a3957d29d31c0b9619822cc3a451771c468f704c7"
+mysql_exporter_address: "{{ ansible_host }}"
+mysql_exporter_socket: /run/mysqld/mysqld.sock
+mysql_exporter_password: "{{ lookup('ansible.builtin.env', 'MYSQL_EXPORTER_PASSWORD') }}"
+mysql_exporter_release: "mysqld_exporter-{{ mysql_exporter_version }}.linux-amd64"

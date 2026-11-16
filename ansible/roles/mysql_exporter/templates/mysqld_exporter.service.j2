@@ -1,0 +1,19 @@
+[Unit]
+Description=MySQL Exporter for Prometheus
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=mysqld_exporter
+Group=mysqld_exporter
+ExecStart=/usr/local/bin/mysqld_exporter --config.my-cnf=/etc/mysqld_exporter/my.cnf --web.listen-address={{ mysql_exporter_address }}:9104 --collect.global_status --no-collect.global_variables --no-collect.slave_status
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

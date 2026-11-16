@@ -15,7 +15,7 @@
   retries: "{{ prometheus_verify_retries }}"
   delay: "{{ prometheus_verify_delay }}"
 
-- name: Require all expected scrape targets to be UP
+- name: Require all expected host and Prometheus targets to be UP
   ansible.builtin.uri:
     url: "http://{{ prometheus_address }}:9090/api/v1/targets?state=active"
     use_proxy: false
@@ -34,8 +34,14 @@
       (prometheus_targets.json.data.activeTargets | default([])
        | selectattr('labels.job', 'equalto', 'prometheus')
        | map(attribute='labels.instance') | list) == [inventory_hostname]
-    - prometheus_targets.json.data.activeTargets | default([]) | length == (groups['node_exporter'] | length) + 1
-    - prometheus_targets.json.data.activeTargets | default([]) | rejectattr('health', 'equalto', 'up') | list | length == 0
+    - >-
+      prometheus_targets.json.data.activeTargets | default([])
+      | rejectattr('labels.job', 'equalto', 'mysql') | list | length
+      == (groups['node_exporter'] | length) + 1
+    - >-
+      prometheus_targets.json.data.activeTargets | default([])
+      | rejectattr('labels.job', 'equalto', 'mysql')
+      | rejectattr('health', 'equalto', 'up') | list | length == 0
   retries: "{{ prometheus_verify_retries }}"
   delay: "{{ prometheus_verify_delay }}"
 

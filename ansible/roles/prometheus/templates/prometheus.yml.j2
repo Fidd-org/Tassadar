@@ -23,3 +23,7 @@ scrape_configs:
         labels:
           instance: {{ host | to_json }}
 {% endfor %}
+  - job_name: mysql
+    file_sd_configs:
+      - files: [/etc/prometheus/mysql-targets.yml]
+        refresh_interval: 15s

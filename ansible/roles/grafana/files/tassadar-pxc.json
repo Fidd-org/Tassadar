@@ -1,0 +1,244 @@
+{
+  "uid": "tassadar-pxc",
+  "title": "Tassadar — PXC",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": false,
+  "tags": [
+    "tassadar",
+    "pxc"
+  ],
+  "timezone": "browser",
+  "refresh": "30s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "MySQL reachable",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "tassadar-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 7
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "No data",
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "Down",
+                  "color": "orange"
+                },
+                "1": {
+                  "text": "Up",
+                  "color": "green"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "mysql_up{job=\"mysql\"}",
+          "legendFormat": "{{instance}}",
+          "instant": true,
+          "range": false
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Galera component size",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "tassadar-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 7
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "No data"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "mysql_global_status_wsrep_cluster_size{job=\"mysql\"}",
+          "legendFormat": "{{instance}}",
+          "instant": true,
+          "range": false
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Galera component status",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "tassadar-prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 7,
+        "w": 12,
+        "h": 7
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "No data",
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "Non-primary / disconnected",
+                  "color": "orange"
+                },
+                "1": {
+                  "text": "Primary",
+                  "color": "green"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "mysql_global_status_wsrep_cluster_status{job=\"mysql\"}",
+          "legendFormat": "{{instance}}",
+          "instant": true,
+          "range": false
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Galera node state",
+      "type": "stat",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "tassadar-prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 7,
+        "w": 12,
+        "h": 7
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "noValue": "No data",
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "0": {
+                  "text": "Undefined",
+                  "color": "orange"
+                },
+                "1": {
+                  "text": "Joining",
+                  "color": "orange"
+                },
+                "2": {
+                  "text": "Donor / desynced",
+                  "color": "orange"
+                },
+                "3": {
+                  "text": "Joined",
+                  "color": "orange"
+                },
+                "4": {
+                  "text": "Synced",
+                  "color": "green"
+                }
+              }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "mysql_global_status_wsrep_local_state{job=\"mysql\"}",
+          "legendFormat": "{{instance}}",
+          "instant": true,
+          "range": false
+        }
+      ]
+    }
+  ]
+}
