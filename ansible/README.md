@@ -84,7 +84,7 @@ plan/apply/destroy, nor install/reconfigure monitoring. Spaces credentials, SSH
 identity/public-key Variable and PXC_ROOT_PASSWORD are required; DigitalOcean
 API and Grafana credentials are not passed. Empty/missing outputs fail before
 remote actions. Both workflows share concurrency group tassadar-production.
-Recovery and the outage test remain separate manual playbooks.
+Manage PXC also provides manual recover and test-recovery operations for an explicitly selected node.
 
 # playbooks/pxc/pxc.yml
 
@@ -326,3 +326,16 @@ test cluster; it deliberately stops MySQL and should not run on every deployment
 There is no local simulated regression suite. Negative cases such as missing
 replica rows, Non-Primary status, and unreachable Galera ports are enforced by
 the Ansible tasks but are not covered by separate automated regression tests.
+
+## Recovery from GitHub Actions
+
+In **Manage PXC**, choose **recover** to rejoin one unavailable member, or
+**test-recovery** to stop MySQL on one node and test writes during its outage.
+Select **recovery_node** and acknowledge **allow_sst**. The test also requires
+**allow_node_stop** and is intended for a dedicated test cluster.
+
+The test first verifies all three nodes, writes a baseline, stops the selected
+MySQL service, writes through both survivors and runs the recovery role.
+It then requires all three nodes to read the baseline and outage records.
+The role checks that both survivors are ready, synced members of the same
+two-node Primary component before it changes the target.

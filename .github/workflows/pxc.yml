@@ -4,14 +4,31 @@ on:
   workflow_dispatch:
     inputs:
       operation:
-        description: Deploy PXC, verify replication, or install MySQL monitoring
+        description: Deploy, verify, monitor, recover one PXC node, or test recovery
         type: choice
         options:
           - deploy
           - verify
           - monitor
+          - recover
+          - test-recovery
         default: verify
         required: true
+
+      recovery_node:
+        description: Node to recover or deliberately stop during the recovery test
+        type: choice
+        options: [pxc-1, pxc-2, pxc-3]
+        default: pxc-3
+        required: true
+      allow_sst:
+        description: Allow SST to replace MySQL data on the selected recovery node
+        type: boolean
+        default: false
+      allow_node_stop:
+        description: For test-recovery, allow stopping MySQL on the selected test node
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -43,12 +60,29 @@ jobs:
         id: request
         env:
           OPERATION: ${{ inputs.operation }}
+          RECOVERY_NODE: ${{ inputs.recovery_node }}
+          ALLOW_SST: ${{ inputs.allow_sst }}
+          ALLOW_NODE_STOP: ${{ inputs.allow_node_stop }}
         run: |
           set -euo pipefail
           case "$OPERATION" in
-            deploy|verify|monitor) ;;
-            *) echo '::error::Choose deploy, verify, or monitor'; exit 1 ;;
+            deploy|verify|monitor|recover|test-recovery) ;;
+            *) echo '::error::Choose deploy, verify, monitor, recover, or test-recovery'; exit 1 ;;
           esac
+          if [[ "$OPERATION" == recover || "$OPERATION" == test-recovery ]]; then
+            case "$RECOVERY_NODE" in
+              pxc-1|pxc-2|pxc-3) ;;
+              *) echo '::error::Choose a PXC recovery node'; exit 1 ;;
+            esac
+            if [[ "$ALLOW_SST" != true ]]; then
+              echo '::error::Acknowledge possible SST on the selected node'
+              exit 1
+            fi
+            if [[ "$OPERATION" == test-recovery && "$ALLOW_NODE_STOP" != true ]]; then
+              echo '::error::Acknowledge the deliberate MySQL stop for test-recovery'
+              exit 1
+            fi
+          fi
 
       - name: Install OpenTofu for reading state outputs
         uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
@@ -155,6 +189,30 @@ jobs:
           GRAFANA_ADMIN_PASSWORD: ${{ secrets.GRAFANA_ADMIN_PASSWORD }}
         run: ansible-playbook -i "$RUNNER_TEMP/tassadar-ansible/inventory.yml" playbooks/monitoring/mysql-exporter.yml -e pxc_require_runtime_password=true
 
+      - name: Recover the selected node or test single-node recovery
+        id: recovery
+        if: inputs.operation == 'recover' || inputs.operation == 'test-recovery'
+        env:
+          ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
+          PXC_ROOT_PASSWORD: ${{ secrets.PXC_ROOT_PASSWORD }}
+          OPERATION: ${{ inputs.operation }}
+          RECOVERY_NODE: ${{ inputs.recovery_node }}
+        run: |
+          set -euo pipefail
+          test_allow_node_stop=false
+          case "$OPERATION" in
+            recover) playbook=playbooks/pxc/pxc-recover-node.yml ;;
+            test-recovery)
+              playbook=playbooks/pxc/pxc-test-recovery.yml
+              test_allow_node_stop=true
+              ;;
+            *) exit 1 ;;
+          esac
+          ansible-playbook -i "$RUNNER_TEMP/tassadar-ansible/inventory.yml" "$playbook" \
+            -e pxc_require_runtime_password=true \
+            -e "pxc_recovery_node=$RECOVERY_NODE" -e pxc_recovery_allow_sst=true \
+            -e "pxc_test_allow_node_stop=$test_allow_node_stop"
+
       - name: Remove controller SSH files and generated inventory
         id: cleanup_ssh
         if: always()
@@ -176,6 +234,8 @@ jobs:
           PXC_DEPLOYMENT_MODE: ${{ steps.pxc.outputs.deployment_mode }}
           VERIFY_OUTCOME: ${{ steps.verify_pxc.outcome }}
           MONITOR_OUTCOME: ${{ steps.monitor.outcome }}
+          RECOVERY_OUTCOME: ${{ steps.recovery.outcome }}
+          RECOVERY_NODE: ${{ inputs.recovery_node }}
           CLEANUP_OUTCOME: ${{ steps.cleanup_ssh.outcome }}
         run: |
           {
@@ -195,6 +255,7 @@ jobs:
             echo "| PXC deployment (${PXC_DEPLOYMENT_MODE:-not-classified}) | $PXC_OUTCOME |"
             echo "| Standalone health and replication | $VERIFY_OUTCOME |"
             echo "| MySQL Exporter, Prometheus and PXC dashboard | $MONITOR_OUTCOME |"
+            echo "| Recovery or outage test ($RECOVERY_NODE) | $RECOVERY_OUTCOME |"
             echo "| Controller files cleanup | $CLEANUP_OUTCOME |"
             echo
             if [[ "$JOB_STATUS" == cancelled ]]; then
@@ -206,9 +267,13 @@ jobs:
                     "$CLEANUP_OUTCOME" == success ]] &&
                  { [[ "$OPERATION" == deploy && "$PXC_OUTCOME" == success ]] ||
                    [[ "$OPERATION" == verify && "$VERIFY_OUTCOME" == success ]] ||
-                   [[ "$OPERATION" == monitor && "$MONITOR_OUTCOME" == success ]]; }; then
+                   [[ "$OPERATION" == monitor && "$MONITOR_OUTCOME" == success ]] ||
+                   [[ "$OPERATION" == recover && "$RECOVERY_OUTCOME" == success ]] ||
+                   [[ "$OPERATION" == test-recovery && "$RECOVERY_OUTCOME" == success ]]; }; then
               if [[ "$OPERATION" == monitor ]]; then
                 echo '**MySQL monitoring enabled. Prometheus verified all three PXC nodes and the PXC dashboard was provisioned.**'
+              elif [[ "$OPERATION" == test-recovery ]]; then
+                echo '**Recovery test passed. Writes during the outage were read on all three nodes after recovery.**'
               else
                 echo '**PXC operation completed; health and cross-node replication verified.**'
               fi
@@ -219,5 +284,5 @@ jobs:
             echo 'This workflow reads infrastructure outputs and never runs infrastructure plan/apply/destroy.'
             echo 'Deploy bootstraps only three new empty nodes; an existing healthy cluster is verified.'
             echo 'Verify writes and reads the dedicated percona.example test table; application data is not tested.'
-            echo 'Recovery is a separate manual playbook.'
+            echo 'Recover rejoins one selected node. Test-recovery deliberately stops MySQL on that node and verifies writes before, during, and after the outage.'
           } >> "$GITHUB_STEP_SUMMARY"

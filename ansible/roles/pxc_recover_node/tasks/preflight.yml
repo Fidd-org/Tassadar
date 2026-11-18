@@ -2,7 +2,10 @@
 - name: Validate PXC node recovery parameters
   ansible.builtin.assert:
     that:
-      - groups['pxc'] | length == 3
+      - groups['pxc'] | sort == ['pxc-1', 'pxc-2', 'pxc-3']
+      - ansible_play_hosts_all | sort == groups['pxc'] | sort
+      - ansible_limit | default('') | length == 0
+      - not ansible_check_mode
       - pxc_recovery_node | default('') in groups['pxc']
       - pxc_recovery_allow_sst | default(false) | bool
       - >-
@@ -24,7 +27,7 @@
     --batch --skip-column-names
     --execute="SHOW STATUS WHERE Variable_name IN
     ('wsrep_cluster_size', 'wsrep_cluster_status', 'wsrep_local_state_comment',
-    'wsrep_connected', 'wsrep_ready');"
+    'wsrep_connected', 'wsrep_ready', 'wsrep_cluster_state_uuid');"
   environment:
     MYSQL_PWD: "{{ pxc_root_password }}"
   loop: "{{ groups['pxc'] | difference([pxc_recovery_node]) | sort }}"
@@ -53,6 +56,28 @@
   loop: "{{ pxc_recovery_survivor_status.results }}"
   loop_control:
     label: "{{ item.item | default('unknown') }}"
+  no_log: true
+
+- name: Extract cluster identities from both survivor responses
+  ansible.builtin.set_fact:
+    pxc_recovery_survivor_ids: >-
+      {{ pxc_recovery_survivor_status.results | map(attribute='stdout_lines')
+         | map('select', 'match', '^wsrep_cluster_state_uuid')
+         | map('list') | list }}
+  no_log: true
+
+- name: Require both survivors to share a valid nonzero cluster identity
+  ansible.builtin.assert:
+    that:
+      - pxc_recovery_survivor_ids | map('length') | list == [1, 1]
+      - pxc_recovery_survivor_ids | map('first') | unique | list | length == 1
+      - >-
+        ((pxc_recovery_survivor_ids | first | first).split() | last)
+        is match('^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+      - >-
+        ((pxc_recovery_survivor_ids | first | first).split() | last)
+        != '00000000-0000-0000-0000-000000000000'
+    fail_msg: The two survivors do not share one valid Galera cluster identity.
   no_log: true
 
 - name: Probe the recovery node wsrep status
@@ -85,7 +110,7 @@
       - >-
         pxc_recovery_target_status.rc | default(1) != 0
         or 'wsrep_cluster_status\tPrimary'
-        not in (pxc_recovery_target_status.stdout | default(''))
+        not in (pxc_recovery_target_status.stdout_lines | default([]))
     fail_msg: >-
       The recovery node currently belongs to a Primary component. This may be
       a healthy node or split brain; refusing to stop or overwrite it.
