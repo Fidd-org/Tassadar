@@ -18,8 +18,9 @@ private addresses; access the UI through an SSH tunnel.
 
 PXC uses native VM packages. Its deploy operation initializes three new nodes or verifies an
 already healthy cluster without bootstrapping it again. A partial cluster or
-existing inactive data stops deployment for diagnosis/recovery. MySQL Exporter,
-recovery automation and the FlowerCA application remain separate steps.
+existing inactive data stops deployment for diagnosis/recovery. A fresh deploy
+can also test single-node recovery when test_recovery is enabled. MySQL Exporter, manual recovery and the FlowerCA
+application remain separate steps.
 
 ## Configuration
 
@@ -103,7 +104,7 @@ After infrastructure apply, open **Actions → Manage PXC → Run workflow**:
 
 | Operation | Result |
 | --- | --- |
-| `deploy` | Install/bootstrap three new nodes, or verify an existing healthy cluster |
+| `deploy` | Install/bootstrap three new nodes and verify replication; optionally test recovery. An existing healthy cluster is only verified |
 | `verify` | Check Galera health, cluster identity and cross-node writes/reads |
 
 Both initialize the existing S3 backend, read named state outputs, generate
@@ -112,10 +113,19 @@ plan/apply/destroy. Required settings: Spaces credentials, `ANSIBLE_SSH_PRIVATE_
 `INFRA_SSH_PUBLIC_KEY` and `PXC_ROOT_PASSWORD`; no DigitalOcean API token or
 Grafana password. Missing/empty state fails before remote service operations.
 Verify uses the dedicated `percona.example` test table and writes test records.
-Deploy already includes the same verification; recovery remains a manual playbook.
+For a fresh deploy, optionally enable **test_recovery** (off by default).
+After installation and replication checks, this selects a random PXC node,
+stops its MySQL service, checks writes through the other two nodes, recovers
+the selected node and verifies records on all three. The choice and result
+appear in the log and Summary. This checkbox allows a MySQL stop and possible
+SST; the manual recovery checkboxes are not required. A failed test fails the
+deploy. With the checkbox off, only health and replication are checked.
+A repeated deploy of an already healthy cluster skips the outage test even
+when test_recovery is enabled.
 
-Host monitoring was previously validated in GitHub. The separated PXC workflow
-and its first/repeated deployment still require a live cloud run.
+For later recovery checks, use Manage PXC / test-recovery; to recover one
+unavailable node, use recover. Select recovery_node and acknowledge allow_sst;
+test-recovery also requires allow_node_stop.
 
 ## Delete from GitHub
 

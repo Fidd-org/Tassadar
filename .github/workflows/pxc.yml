@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       operation:
-        description: Deploy, verify, monitor, recover one PXC node, or test recovery
+        description: Deploy with an optional recovery test, verify, monitor, or recover PXC
         type: choice
         options:
           - deploy
@@ -14,6 +14,11 @@ on:
           - test-recovery
         default: verify
         required: true
+
+      test_recovery:
+        description: For fresh deploy, stop MySQL on a random node and test recovery (allows SST)
+        type: boolean
+        default: false
 
       recovery_node:
         description: Node to recover or deliberately stop during the recovery test
@@ -171,6 +176,23 @@ jobs:
           fi
           exit "$pxc_exit"
 
+      - name: Test node recovery after the first successful deployment
+        id: deploy_recovery
+        if: success() && inputs.operation == 'deploy' && inputs.test_recovery && steps.pxc.outputs.deployment_mode == 'fresh'
+        env:
+          ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
+          PXC_ROOT_PASSWORD: ${{ secrets.PXC_ROOT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # Opted-in fresh deploy tests recovery; healthy repeat deploys never stop MySQL.
+          recovery_node="$(shuf -e pxc-1 pxc-2 pxc-3 -n 1)"
+          echo "node=$recovery_node" >> "$GITHUB_OUTPUT"
+          echo "Recovery test selected node: $recovery_node"
+          ansible-playbook -i "$RUNNER_TEMP/tassadar-ansible/inventory.yml" playbooks/pxc/pxc-test-recovery.yml \
+            -e pxc_require_runtime_password=true \
+            -e "pxc_recovery_node=$recovery_node" -e pxc_recovery_allow_sst=true \
+            -e pxc_test_allow_node_stop=true
+
       - name: Verify PXC health and cross-node replication
         id: verify_pxc
         if: inputs.operation == 'verify'
@@ -232,6 +254,9 @@ jobs:
           CONNECTIVITY_OUTCOME: ${{ steps.connectivity.outcome }}
           PXC_OUTCOME: ${{ steps.pxc.outcome }}
           PXC_DEPLOYMENT_MODE: ${{ steps.pxc.outputs.deployment_mode }}
+          TEST_RECOVERY: ${{ inputs.test_recovery }}
+          DEPLOY_RECOVERY_OUTCOME: ${{ steps.deploy_recovery.outcome }}
+          DEPLOY_RECOVERY_NODE: ${{ steps.deploy_recovery.outputs.node }}
           VERIFY_OUTCOME: ${{ steps.verify_pxc.outcome }}
           MONITOR_OUTCOME: ${{ steps.monitor.outcome }}
           RECOVERY_OUTCOME: ${{ steps.recovery.outcome }}
@@ -242,6 +267,7 @@ jobs:
             echo '### PXC operation'
             echo
             echo "Requested operation: $OPERATION"
+            echo "Fresh deployment recovery test requested: $TEST_RECOVERY"
             echo
             echo '| Step | Result |'
             echo '| --- | --- |'
@@ -253,6 +279,7 @@ jobs:
             echo "| Inventory from state outputs | $INVENTORY_OUTCOME |"
             echo "| PXC SSH/Python through bastion | $CONNECTIVITY_OUTCOME |"
             echo "| PXC deployment (${PXC_DEPLOYMENT_MODE:-not-classified}) | $PXC_OUTCOME |"
+            echo "| Fresh deployment recovery test (${DEPLOY_RECOVERY_NODE:-not-selected}) | $DEPLOY_RECOVERY_OUTCOME |"
             echo "| Standalone health and replication | $VERIFY_OUTCOME |"
             echo "| MySQL Exporter, Prometheus and PXC dashboard | $MONITOR_OUTCOME |"
             echo "| Recovery or outage test ($RECOVERY_NODE) | $RECOVERY_OUTCOME |"
@@ -265,12 +292,24 @@ jobs:
                     "$CREDENTIALS_OUTCOME" == success && "$INITIALIZE_OUTCOME" == success &&
                     "$INVENTORY_OUTCOME" == success && "$CONNECTIVITY_OUTCOME" == success &&
                     "$CLEANUP_OUTCOME" == success ]] &&
-                 { [[ "$OPERATION" == deploy && "$PXC_OUTCOME" == success ]] ||
+                 { [[ "$OPERATION" == deploy && "$PXC_OUTCOME" == success &&
+                       ( ( "$PXC_DEPLOYMENT_MODE" == fresh &&
+                             ( ( "$TEST_RECOVERY" == true && "$DEPLOY_RECOVERY_OUTCOME" == success ) ||
+                               ( "$TEST_RECOVERY" == false && "$DEPLOY_RECOVERY_OUTCOME" == skipped ) ) ) ||
+                         ( "$PXC_DEPLOYMENT_MODE" == healthy && "$DEPLOY_RECOVERY_OUTCOME" == skipped ) ) ]] ||
                    [[ "$OPERATION" == verify && "$VERIFY_OUTCOME" == success ]] ||
                    [[ "$OPERATION" == monitor && "$MONITOR_OUTCOME" == success ]] ||
                    [[ "$OPERATION" == recover && "$RECOVERY_OUTCOME" == success ]] ||
                    [[ "$OPERATION" == test-recovery && "$RECOVERY_OUTCOME" == success ]]; }; then
-              if [[ "$OPERATION" == monitor ]]; then
+              if [[ "$OPERATION" == deploy && "$PXC_DEPLOYMENT_MODE" == fresh ]]; then
+                if [[ "$TEST_RECOVERY" == true ]]; then
+                  echo '**New PXC cluster deployed; replication and recovery with writes during a MySQL outage verified.**'
+                else
+                  echo '**New PXC cluster deployed; health and cross-node replication verified. Recovery test was not requested.**'
+                fi
+              elif [[ "$OPERATION" == deploy && "$PXC_DEPLOYMENT_MODE" == healthy ]]; then
+                echo '**Existing healthy PXC cluster verified. The recovery test was skipped; no MySQL service was stopped.**'
+              elif [[ "$OPERATION" == monitor ]]; then
                 echo '**MySQL monitoring enabled. Prometheus verified all three PXC nodes and the PXC dashboard was provisioned.**'
               elif [[ "$OPERATION" == test-recovery ]]; then
                 echo '**Recovery test passed. Writes during the outage were read on all three nodes after recovery.**'
@@ -282,7 +321,7 @@ jobs:
             fi
             echo
             echo 'This workflow reads infrastructure outputs and never runs infrastructure plan/apply/destroy.'
-            echo 'Deploy bootstraps only three new empty nodes; an existing healthy cluster is verified.'
+            echo 'Deploy bootstraps only three new empty nodes and verifies them. When test_recovery is enabled, it then tests recovery by stopping MySQL on one randomly selected PXC node. An existing healthy cluster is verified without the outage test.'
             echo 'Verify writes and reads the dedicated percona.example test table; application data is not tested.'
             echo 'Recover rejoins one selected node. Test-recovery deliberately stops MySQL on that node and verifies writes before, during, and after the outage.'
           } >> "$GITHUB_STEP_SUMMARY"

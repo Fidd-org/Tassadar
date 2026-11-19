@@ -77,7 +77,12 @@ Local fixtures validate inventory/Ansible behaviour, not real SSH reachability.
 
 Run Manage infrastructure / apply first for resources and monitoring, then
 Manage PXC / deploy for the database. Manage PXC / verify checks an existing
-cluster, including test writes to percona.example. Deploy includes verification.
+cluster, including test writes to percona.example. Deploy always includes
+verification. With test_recovery enabled (off by default), a successful fresh
+deploy also randomly selects one of the three nodes and runs pxc-test-recovery.yml:
+it stops MySQL, checks writes through both survivors, recovers the node and
+verifies the test records on all three nodes. A failed test fails the deploy.
+A repeated deploy classified as healthy skips the outage test, even if enabled.
 Both operations run tofu init for the existing S3 backend and prepare-inventory.yml
 from named outputs, then connect through the bastion. They never run infrastructure
 plan/apply/destroy, nor install/reconfigure monitoring. Spaces credentials, SSH
@@ -319,9 +324,21 @@ coverage of both transfer paths requires separate real-cluster runs.
 Deployment and recovery automatically run the shared `pxc_verify` health and
 replication checks. No separate local test command is required.
 
-CI/CD can run the same deployment and recovery playbooks. The outage scenario
-in `pxc-test-recovery.yml` is a separate, explicitly enabled test for a dedicated
-test cluster; it deliberately stops MySQL and should not run on every deployment.
+Manage PXC / deploy runs `pxc-test-recovery.yml` after a successful fresh
+deployment only when **test_recovery** is enabled (off by default). This checkbox
+authorizes the test on one randomly selected PXC node, including a MySQL stop
+and possible SST. The selected node is recorded before the test in the workflow
+log and Summary, including when the test fails. The manual recovery checkboxes
+are not needed for this fresh-deployment test. Repeat deploys of a healthy
+cluster skip it even when enabled. The workflow Summary reports the requested
+option and test outcome separately from installation; an unchecked test is
+skipped and does not affect deploy success.
+If the fresh-deployment test fails, inspect the cluster and rerun test-recovery
+explicitly: a later deploy of a healthy cluster does not repeat the outage test.
+
+Running `playbooks/pxc/pxc.yml` directly does not trigger the outage test.
+The standalone test and its acknowledgement flags remain available for later
+checks on a dedicated test cluster.
 
 There is no local simulated regression suite. Negative cases such as missing
 replica rows, Non-Primary status, and unreachable Galera ports are enforced by
