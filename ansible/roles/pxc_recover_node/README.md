@@ -39,3 +39,10 @@ bootstrapping a new Primary component.
 See `../../README.md` for the opt-in outage/recovery test and local regression
 checks. Percona documents the network ports at:
 https://docs.percona.com/percona-xtradb-cluster/8.0/install-index.html
+
+
+The complete pxc-recover-node.yml playbook additionally repairs Node Exporter
+and MySQL Exporter, refreshes Prometheus targets from current inventory, and
+verifies the PXC dashboard. That integration requires monitoring hosts and
+exporter/Grafana credentials; these are validated before DB changes. The role
+itself stays focused on the DB rejoin so the existing-VM outage test can reuse it.

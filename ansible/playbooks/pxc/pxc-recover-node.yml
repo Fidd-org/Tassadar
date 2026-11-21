@@ -1,4 +1,7 @@
 ---
+- name: Validate monitoring inventory and credentials before recovery changes
+  ansible.builtin.import_playbook: ../monitoring/check-mysql-exporter-inputs.yml
+
 - name: Validate PXC node recovery
   hosts: pxc
   become: true
@@ -58,3 +61,13 @@
       run_once: true
       tags:
         - recovery
+
+- name: Restore host metrics on the recovered PXC node
+  hosts: "{{ pxc_recovery_node | default('pxc-recovery-target-not-set') }}"
+  become: true
+  any_errors_fatal: true
+  roles:
+    - node_exporter
+
+- name: Restore MySQL metrics and monitoring targets from the current inventory
+  ansible.builtin.import_playbook: ../monitoring/mysql-exporter.yml

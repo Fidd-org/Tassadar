@@ -42,6 +42,7 @@ Before running the workflow:
 | `ANSIBLE_SSH_PRIVATE_KEY` | Full automation private key, including BEGIN/END lines |
 | `GRAFANA_ADMIN_PASSWORD` | Current Grafana admin password, at least 20 characters |
 | `PXC_ROOT_PASSWORD` | Current MySQL root password, at least 20 characters |
+| `MYSQL_EXPORTER_PASSWORD` | Separate stable exporter password, 24–128 alphanumeric characters; needed for monitor and recover |
 
 The private SSH key must match `INFRA_SSH_PUBLIC_KEY` and have no passphrase.
 Enter values without surrounding quotes. Passwords must have no line breaks
@@ -125,7 +126,15 @@ when test_recovery is enabled.
 
 For later recovery checks, use Manage PXC / test-recovery; to recover one
 unavailable node, use recover. Select recovery_node and acknowledge allow_sst;
-test-recovery also requires allow_node_stop.
+test-recovery also requires allow_node_stop. Recover restores Node Exporter and
+MySQL Exporter, refreshes Prometheus targets from the new inventory and verifies
+the PXC dashboard. It also needs MYSQL_EXPORTER_PASSWORD and
+GRAFANA_ADMIN_PASSWORD; monitoring VMs must be reachable.
+
+Manage PXC has a 180-minute job limit. Before starting recovery or its outage
+test, it requires at least 75 minutes of remaining recovery budget. If a slow
+deploy leaves less, the test fails before stopping MySQL. Cancellation and
+runner failure can still interrupt recovery; inspect the cluster before retrying.
 
 ## Delete from GitHub
 

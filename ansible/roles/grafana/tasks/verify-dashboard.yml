@@ -1,0 +1,26 @@
+---
+- name: Load the expected dashboard content from the controller repository
+  ansible.builtin.set_fact:
+    grafana_expected_dashboard_content: >-
+      {{ lookup('ansible.builtin.file', grafana_dashboard_file) | from_json
+         | dict2items | rejectattr('key', 'in', ['id', 'version']) | items2dict }}
+
+- name: Wait for Grafana to load the expected provisioned dashboard content
+  ansible.builtin.uri:
+    url: "http://{{ grafana_address }}:3000/api/dashboards/uid/{{ grafana_expected_dashboard_content.uid }}"
+    url_username: admin
+    url_password: "{{ grafana_admin_password }}"
+    force_basic_auth: true
+    use_proxy: false
+    return_content: true
+  register: grafana_dashboard
+  changed_when: false
+  until:
+    - grafana_dashboard.status | default(0) == 200
+    - grafana_dashboard.json.meta.provisioned | default(false) | bool
+    - >-
+      (grafana_dashboard.json.dashboard | default({}) | combine(grafana_expected_dashboard_content))
+      == (grafana_dashboard.json.dashboard | default({}))
+  retries: "{{ grafana_verify_retries }}"
+  delay: "{{ grafana_verify_delay }}"
+  no_log: true

@@ -10,13 +10,7 @@
       - mysql_exporter_address in ansible_facts.all_ipv4_addresses
 
 - name: Validate the exporter password without exposing it
-  ansible.builtin.assert:
-    that:
-      - mysql_exporter_password is string
-      - mysql_exporter_password is match('^[A-Za-z0-9]{24,128}\\Z')
-      - mysql_exporter_password != pxc_root_password
-    fail_msg: Set MYSQL_EXPORTER_PASSWORD to a separate alphanumeric password with 24 to 128 characters.
-  no_log: true
+  ansible.builtin.import_tasks: credentials.yml
 
 - name: Read PXC status locally with the cluster administrator
   ansible.builtin.command:

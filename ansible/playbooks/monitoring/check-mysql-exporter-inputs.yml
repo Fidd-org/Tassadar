@@ -1,0 +1,40 @@
+---
+- name: Require the complete PXC and monitoring inventory
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  tags: [always]
+  tasks:
+    - name: Check that the operation includes all required hosts
+      ansible.builtin.assert:
+        that:
+          - groups.get('pxc', []) | sort == ['pxc-1', 'pxc-2', 'pxc-3']
+          - groups.get('prometheus', []) | length == 1
+          - groups.get('grafana', []) | length == 1
+          - groups.get('pxc', []) | difference(groups.get('node_exporter', [])) | length == 0
+          - ansible_limit | default('') | length == 0
+          - not ansible_check_mode
+          - ansible_run_tags | list == ['all']
+          - ansible_skip_tags | default([]) | length == 0
+        fail_msg: Use the complete inventory and run this playbook without limits, tags, or check mode.
+
+    - name: Load shared PXC credential defaults
+      ansible.builtin.import_role:
+        name: pxc_config
+        public: true
+
+    - name: Validate the current PXC password
+      ansible.builtin.import_role:
+        name: pxc_preflight
+        tasks_from: credentials
+
+    - name: Validate the exporter password
+      ansible.builtin.import_role:
+        name: mysql_exporter
+        tasks_from: credentials
+
+    - name: Validate the current Grafana password
+      ansible.builtin.import_role:
+        name: grafana
+        tasks_from: credentials

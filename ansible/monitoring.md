@@ -222,7 +222,10 @@ health, the exact provisioned datasource URL/type/default/read-only settings,
 datasource connectivity, live exporter values and per-node host metrics
 through Grafana's data proxy, and the provisioned dashboard. The complete
 node_exporter group is required. It fails if Prometheus is unreachable or
-expected nodes/metrics are missing. Authenticated tasks use no_log.
+expected nodes/metrics are missing. Dashboard verification compares the current
+API content with the JSON in the repository, including panels and queries;
+matching UID/provisioned alone is insufficient. Grafana-generated id/version
+are ignored, and stale content is retried. Authenticated tasks use no_log.
 
 These API checks verify Grafana provisioning and server-to-Prometheus access.
 They do not replace browser visual checks, real VM installation/restart/
@@ -256,3 +259,15 @@ dedicated account that has no database grants. It listens on private port
 9104, reachable from Prometheus by the existing firewall rule. The playbook
 adds three scrape targets, verifies MySQL reachability and Galera health in
 Prometheus, and provisions **Tassadar — PXC** in the existing Grafana folder.
+
+
+The metrics check uses prometheus_address, the same address configured in the
+Prometheus service. Grafana's datasource defaults to that override when set in
+inventory, otherwise to the Prometheus ansible_host.
+
+Recover / pxc-recover-node.yml runs the same MySQL monitoring playbook after
+restoring the cluster, and reinstalls Node Exporter on the recovered VM. This
+repairs replacement VMs without exporters and updates both host and MySQL
+targets when the private IP changes. Regenerate inventory from current state
+before recovery. The outage test reuses the DB recovery role on an existing VM;
+it does not reprovision monitoring.

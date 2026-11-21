@@ -1,20 +1,6 @@
 ---
-- name: Require the complete PXC and monitoring inventory
-  hosts: localhost
-  connection: local
-  gather_facts: false
-  tasks:
-    - name: Check that the operation includes all required hosts
-      ansible.builtin.assert:
-        that:
-          - groups.get('pxc', []) | sort == ['pxc-1', 'pxc-2', 'pxc-3']
-          - groups.get('prometheus', []) | length == 1
-          - groups.get('grafana', []) | length == 1
-          - ansible_limit | default('') | length == 0
-          - not ansible_check_mode
-          - ansible_run_tags | list == ['all']
-          - ansible_skip_tags | default([]) | length == 0
-        fail_msg: Use the complete inventory and run this playbook without limits, tags, or check mode.
+- name: Validate monitoring inputs before changing services
+  ansible.builtin.import_playbook: check-mysql-exporter-inputs.yml
 
 - name: Install MySQL Exporter on the healthy PXC cluster
   hosts: pxc
@@ -47,9 +33,41 @@
         group: prometheus
         mode: "0640"
 
+    - name: Verify current MySQL scrape addresses and target health
+      ansible.builtin.uri:
+        url: "http://{{ prometheus_address }}:9090/api/v1/targets?state=active"
+        use_proxy: false
+        return_content: true
+      vars:
+        mysql_expected_scrape_urls: >-
+          {{ lookup('ansible.builtin.template', playbook_dir ~ '/../../templates/mysql-targets.yml.j2')
+             | from_yaml | map(attribute='targets') | flatten
+             | map('regex_replace', '^', 'http://')
+             | map('regex_replace', '$', '/metrics') | list }}
+      register: mysql_scrape_targets
+      changed_when: false
+      until:
+        - mysql_scrape_targets.status | default(0) == 200
+        - mysql_scrape_targets.json.status | default('') == 'success'
+        - >-
+          (mysql_scrape_targets.json.data.activeTargets | default([])
+           | selectattr('labels.job', 'equalto', 'mysql')
+           | map(attribute='labels.instance') | sort | list) == (groups['pxc'] | sort)
+        - >-
+          (mysql_scrape_targets.json.data.activeTargets | default([])
+           | selectattr('labels.job', 'equalto', 'mysql')
+           | sort(attribute='labels.instance') | map(attribute='scrapeUrl') | list)
+          == mysql_expected_scrape_urls
+        - >-
+          (mysql_scrape_targets.json.data.activeTargets | default([])
+           | selectattr('labels.job', 'equalto', 'mysql')
+           | map(attribute='health') | unique | list) == ['up']
+      retries: 12
+      delay: 5
+
     - name: Verify live MySQL and Galera metrics from all expected nodes
       ansible.builtin.uri:
-        url: "http://{{ ansible_host }}:9090/api/v1/query?query={{ item.query | urlencode }}"
+        url: "http://{{ prometheus_address }}:9090/api/v1/query?query={{ item.query | urlencode }}"
         use_proxy: false
         return_content: true
       register: mysql_metrics
@@ -92,20 +110,9 @@
         group: grafana
         mode: "0640"
 
-    - name: Verify that Grafana provisioned the PXC dashboard
-      ansible.builtin.uri:
-        url: "http://{{ grafana_address }}:3000/api/dashboards/uid/tassadar-pxc"
-        url_username: admin
-        url_password: "{{ grafana_admin_password }}"
-        force_basic_auth: true
-        use_proxy: false
-        return_content: true
-      register: mysql_exporter_dashboard
-      changed_when: false
-      until:
-        - mysql_exporter_dashboard.status | default(0) == 200
-        - mysql_exporter_dashboard.json.dashboard.uid | default('') == 'tassadar-pxc'
-        - mysql_exporter_dashboard.json.meta.provisioned | default(false) | bool
-      retries: "{{ grafana_verify_retries }}"
-      delay: "{{ grafana_verify_delay }}"
-      no_log: true
+    - name: Verify the current provisioned PXC dashboard content
+      ansible.builtin.import_role:
+        name: grafana
+        tasks_from: verify-dashboard
+      vars:
+        grafana_dashboard_file: "{{ playbook_dir }}/../../roles/grafana/files/tassadar-pxc.json"

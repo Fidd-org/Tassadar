@@ -73,20 +73,8 @@
       retries: "{{ grafana_verify_retries }}"
       delay: "{{ grafana_verify_delay }}"
 
-    - name: Verify the managed VM dashboard is loaded
-      ansible.builtin.uri:
-        url: "http://{{ grafana_address }}:3000/api/dashboards/uid/tassadar-nodes"
-        url_username: admin
-        url_password: "{{ grafana_admin_password }}"
-        force_basic_auth: true
-        use_proxy: false
-        return_content: true
-      register: grafana_dashboard
-      changed_when: false
-      until:
-        - grafana_dashboard.status | default(0) == 200
-        - grafana_dashboard.json.dashboard.uid | default('') == 'tassadar-nodes'
-        - grafana_dashboard.json.meta.provisioned | default(false) | bool
-      retries: "{{ grafana_verify_retries }}"
-      delay: "{{ grafana_verify_delay }}"
+    - name: Verify the current managed VM dashboard content
+      ansible.builtin.import_tasks: verify-dashboard.yml
+      vars:
+        grafana_dashboard_file: "{{ role_path }}/files/tassadar-nodes.json"
   no_log: true

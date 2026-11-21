@@ -46,7 +46,7 @@ jobs:
   pxc:
     if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 180
     defaults:
       run:
         shell: bash
@@ -56,6 +56,14 @@ jobs:
       TF_INPUT: "false"
 
     steps:
+      - name: Reserve time for recovery before starting deployment
+        id: recovery_budget
+        working-directory: ${{ runner.temp }}
+        run: |
+          set -euo pipefail
+          # Leave five minutes before the 180-minute job timeout for final reporting.
+          echo "deadline=$(( $(date +%s) + 175 * 60 ))" >> "$GITHUB_OUTPUT"
+
       - name: Check out Tassadar
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -180,10 +188,12 @@ jobs:
         id: deploy_recovery
         if: success() && inputs.operation == 'deploy' && inputs.test_recovery && steps.pxc.outputs.deployment_mode == 'fresh'
         env:
+          RECOVERY_DEADLINE_EPOCH: ${{ steps.recovery_budget.outputs.deadline }}
           ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
           PXC_ROOT_PASSWORD: ${{ secrets.PXC_ROOT_PASSWORD }}
         run: |
           set -euo pipefail
+          bash ../.github/scripts/check-recovery-budget.sh
           # Opted-in fresh deploy tests recovery; healthy repeat deploys never stop MySQL.
           recovery_node="$(shuf -e pxc-1 pxc-2 pxc-3 -n 1)"
           echo "node=$recovery_node" >> "$GITHUB_OUTPUT"
@@ -215,12 +225,16 @@ jobs:
         id: recovery
         if: inputs.operation == 'recover' || inputs.operation == 'test-recovery'
         env:
+          RECOVERY_DEADLINE_EPOCH: ${{ steps.recovery_budget.outputs.deadline }}
+          MYSQL_EXPORTER_PASSWORD: ${{ inputs.operation == 'recover' && secrets.MYSQL_EXPORTER_PASSWORD || '' }}
+          GRAFANA_ADMIN_PASSWORD: ${{ inputs.operation == 'recover' && secrets.GRAFANA_ADMIN_PASSWORD || '' }}
           ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
           PXC_ROOT_PASSWORD: ${{ secrets.PXC_ROOT_PASSWORD }}
           OPERATION: ${{ inputs.operation }}
           RECOVERY_NODE: ${{ inputs.recovery_node }}
         run: |
           set -euo pipefail
+          bash ../.github/scripts/check-recovery-budget.sh
           test_allow_node_stop=false
           case "$OPERATION" in
             recover) playbook=playbooks/pxc/pxc-recover-node.yml ;;
@@ -311,6 +325,8 @@ jobs:
                 echo '**Existing healthy PXC cluster verified. The recovery test was skipped; no MySQL service was stopped.**'
               elif [[ "$OPERATION" == monitor ]]; then
                 echo '**MySQL monitoring enabled. Prometheus verified all three PXC nodes and the PXC dashboard was provisioned.**'
+              elif [[ "$OPERATION" == recover ]]; then
+                echo '**PXC node recovered; host/MySQL exporters, current Prometheus targets and the PXC dashboard verified.**'
               elif [[ "$OPERATION" == test-recovery ]]; then
                 echo '**Recovery test passed. Writes during the outage were read on all three nodes after recovery.**'
               else

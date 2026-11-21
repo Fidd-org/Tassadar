@@ -226,7 +226,13 @@ a recovery procedure; this version does not auto-resume a partial bootstrap.
 ## Recover one PXC node
 
 Use the dedicated recovery playbook only when exactly one PXC node is down and
-the other two nodes form a healthy two-node Primary component:
+the other two nodes form a healthy two-node Primary component. The complete
+playbook also restores monitoring after the join: Node Exporter on the target,
+MySQL Exporter on PXC, refreshed host/MySQL targets in Prometheus and the current
+PXC dashboard. Supply PXC_ROOT_PASSWORD, MYSQL_EXPORTER_PASSWORD and
+GRAFANA_ADMIN_PASSWORD, and include the monitoring hosts in inventory.
+Inventory/credential format checks run on the controller before recovery changes;
+failed input validation stops subsequent plays.
 
 ```bash
 ansible-playbook playbooks/pxc/pxc-recover-node.yml \
@@ -276,6 +282,10 @@ preparing it, and runs the shared `pxc_verify` health and write/read checks afte
 joining. The TCP check does not cover reverse traffic, UDP, or the SST/IST ports;
 those transfers are validated by the real synchronization step. Shared
 verification resets only the dedicated `percona.example` test table.
+The complete recovery playbook then verifies monitoring with targets regenerated
+from inventory; it does not finish successfully if exporter/Prometheus/dashboard
+verification fails. The pxc_recover_node role alone remains responsible for DB
+recovery, as used by the outage test on an already installed cluster.
 
 ## Test a node outage and recovery
 
@@ -335,6 +345,12 @@ option and test outcome separately from installation; an unchecked test is
 skipped and does not affect deploy success.
 If the fresh-deployment test fails, inspect the cluster and rerun test-recovery
 explicitly: a later deploy of a healthy cluster does not repeat the outage test.
+
+The workflow job limit is 180 minutes. It records a deadline at job startup,
+with five minutes reserved for final reporting, and checks for at least 75
+minutes remaining before either recovery invocation. An exhausted budget fails
+before this operation stops MySQL. This avoids consuming recovery time in a
+slow deploy; cancellation or runner failure still requires manual inspection.
 
 Running `playbooks/pxc/pxc.yml` directly does not trigger the outage test.
 The standalone test and its acknowledgement flags remain available for later
