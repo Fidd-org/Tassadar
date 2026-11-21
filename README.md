@@ -75,7 +75,11 @@ Open **Actions → Manage infrastructure → Run workflow** on the default branc
 | `destroy-plan` | Preview full infrastructure deletion without applying it |
 | `destroy` | Apply a fresh destroy plan and verify the remote state is empty |
 
-Start with `plan`, review its output, then run `apply`. Both reject deletion,
+Start with `plan`, review its output, then run `apply`. Before creating VMs,
+both check the planned sizes against DigitalOcean region availability and show
+available alternatives with the same CPU/RAM and their prices. An unavailable
+size fails before apply. This check cannot reserve capacity or prevent it from
+changing between the check and VM creation. Both reject deletion,
 replacement or removal from state of PXC data volumes. Full deletion is only
 available through the explicit destroy operations; this guard does not cover
 manual OpenTofu commands outside the workflow.

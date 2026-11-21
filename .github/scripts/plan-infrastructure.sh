@@ -39,3 +39,8 @@ tofu show -json "$runtime_directory/plan.tfplan" |
     "delete=\($actions | map(select(. == "delete")) | length)",
     "forget=\($actions | map(select(. == "forget")) | length)"
   ' >> "$GITHUB_OUTPUT"
+
+# Plan alone does not reject region capacity errors. Check before any apply.
+if [[ "$OPERATION" == plan || "$OPERATION" == apply ]]; then
+  bash "$(dirname "${BASH_SOURCE[0]}")/check-digitalocean-capacity.sh"
+fi
