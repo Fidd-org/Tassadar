@@ -98,9 +98,14 @@
     url: "{{ grafana_archive_url }}"
     dest: "/var/cache/tassadar/grafana-{{ grafana_version }}.linux-amd64.tar.gz"
     checksum: "{{ grafana_checksum }}"
+    timeout: "{{ grafana_download_timeout }}"
     owner: root
     group: root
     mode: "0644"
+  register: grafana_download
+  until: grafana_download is succeeded
+  retries: 3
+  delay: 5
 
 - name: Create the versioned Grafana installation directory
   ansible.builtin.file:
