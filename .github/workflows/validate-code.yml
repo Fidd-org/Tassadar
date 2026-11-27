@@ -1,0 +1,56 @@
+name: Validate code
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tassadar-validation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  opentofu:
+    name: OpenTofu validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out Tassadar
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install OpenTofu
+        uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: 1.12.3
+          tofu_wrapper: false
+
+      - name: Check formatting and configuration without the state backend
+        run: bash .github/scripts/validate-opentofu.sh
+
+  ansible:
+    name: Ansible validation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out Tassadar
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned Ansible runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          ansible_venv="$RUNNER_TEMP/tassadar-validation-venv"
+          python3 -m venv "$ansible_venv"
+          "$ansible_venv/bin/python" -m pip install --disable-pip-version-check -r ansible/requirements.txt
+          echo "$ansible_venv/bin" >> "$GITHUB_PATH"
+
+      - name: Parse all Ansible YAML and check playbook syntax
+        run: bash .github/scripts/validate-ansible.sh

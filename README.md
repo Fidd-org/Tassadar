@@ -68,6 +68,20 @@ installer does not safely escape these characters during initialization.
 CI accepts SSH server keys on first connection in each run (`accept-new`).
 No manual IP addresses or `ANSIBLE_KNOWN_HOSTS` Secret are required.
 
+## Automatic code checks
+
+`Validate code` runs on pull requests and pushes to `master`. It checks OpenTofu
+format/configuration, parses all Ansible source YAML and syntax-checks playbooks.
+It uses no production secrets, state backend, cloud plan/apply or SSH connections.
+These are source checks; they do not verify deployment or recovery on real VMs.
+
+To repeat locally with OpenTofu and the pinned Ansible runtime installed:
+
+```bash
+bash .github/scripts/validate-opentofu.sh
+bash .github/scripts/validate-ansible.sh
+```
+
 ## Deploy from GitHub
 
 Open **Actions → Manage infrastructure → Run workflow** on the default branch.
