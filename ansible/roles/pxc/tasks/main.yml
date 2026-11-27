@@ -33,15 +33,12 @@
     update_cache: true
     lock_timeout: 300
 
-- name: Download percona-release package
-  ansible.builtin.get_url:
-    url: https://repo.percona.com/apt/percona-release_latest.generic_all.deb
-    dest: /tmp/percona-release_latest.generic_all.deb
-    mode: "0644"
+- name: Download and verify the pinned Percona repository package
+  ansible.builtin.import_tasks: download-release.yml
 
 - name: Install percona-release package
   ansible.builtin.apt:
-    deb: /tmp/percona-release_latest.generic_all.deb
+    deb: "{{ pxc_release_package_path }}"
     state: present
     lock_timeout: 300
 

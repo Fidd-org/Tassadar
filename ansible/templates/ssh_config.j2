@@ -6,7 +6,7 @@ Host {{ ((inventory_pxc_hosts.values() | list) + [inventory_flowerca_ip] + (inve
     ProxyJump tassadar-bastion
 
 Host *
-    User root
+    User ansible
     IdentityFile "{{ inventory_key_file }}"
     IdentitiesOnly yes
     IdentityAgent none

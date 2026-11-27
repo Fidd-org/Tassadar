@@ -21,11 +21,7 @@ resource "digitalocean_droplet" "pxc" {
   monitoring = true
   tags       = [digitalocean_tag.pxc.name]
 
-  user_data = <<-EOT
-    #cloud-config
-    ssh_pwauth: false
-    disable_root: false
-  EOT
+  user_data = local.automation_cloud_init
 }
 
 resource "digitalocean_volume_attachment" "pxc_data" {

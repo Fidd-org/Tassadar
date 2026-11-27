@@ -1,0 +1,214 @@
+---
+# Local root-only regression tests: ordinary text fixtures, no apt/package installation.
+- name: Test the real Percona repository download guards locally
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: true
+  pre_tasks:
+    - name: Load the same repository package defaults as deployment
+      ansible.builtin.import_role:
+        name: pxc_config
+        public: true
+  vars:
+    release_test_content: "Harmless Percona download regression fixture. Not an executable package.\n"
+    release_test_passed: []
+  tasks:
+    - name: Allocate an isolated temporary test directory
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: tassadar-release-test-
+      register: release_test_directory
+
+    - name: Exercise the package download without installing it
+      block:
+        - name: Set isolated fixture paths
+          ansible.builtin.set_fact:
+            pxc_release_cache_dir: "{{ release_test_directory.path }}/cache/percona"
+            pxc_release_package_path: "{{ release_test_directory.path }}/cache/percona/percona-release_{{ pxc_release_version }}_all.deb"
+            pxc_release_url: "file://{{ release_test_directory.path }}/source.txt"
+            pxc_release_checksum: "sha256:{{ release_test_content | hash('sha256') }}"
+
+        - name: Write an ordinary text source fixture
+          ansible.builtin.copy:
+            content: "{{ release_test_content }}"
+            dest: "{{ release_test_directory.path }}/source.txt"
+            owner: root
+            group: root
+            mode: "0644"
+
+        - name: Download a correctly hashed fixture through the real tasks
+          ansible.builtin.include_tasks: ../roles/pxc/tasks/download-release.yml
+
+        - name: Inspect the verified destination
+          ansible.builtin.stat:
+            path: "{{ pxc_release_package_path }}"
+            checksum_algorithm: sha256
+          register: release_test_destination
+
+        - name: Require the expected bytes and root ownership
+          ansible.builtin.assert:
+            that:
+              - release_test_destination.stat.checksum == release_test_content | hash('sha256')
+              - release_test_destination.stat.uid == 0
+              - release_test_destination.stat.gid == 0
+              - release_test_destination.stat.mode == '0644'
+
+        - name: Repeat the same verified download
+          ansible.builtin.include_tasks: ../roles/pxc/tasks/download-release.yml
+
+        - name: Require an unchanged repeated download
+          ansible.builtin.assert:
+            that:
+              - not pxc_release_download.changed
+
+        - name: Corrupt the root-owned cached bytes
+          ansible.builtin.copy:
+            content: Untrusted cached content
+            dest: "{{ pxc_release_package_path }}"
+            owner: root
+            group: root
+            mode: "0644"
+
+        - name: Revalidate and replace the corrupt cache
+          ansible.builtin.include_tasks: ../roles/pxc/tasks/download-release.yml
+
+        - name: Read the repaired checksum
+          ansible.builtin.stat:
+            path: "{{ pxc_release_package_path }}"
+            checksum_algorithm: sha256
+          register: release_test_repaired
+
+        - name: Require the corrupt bytes to have been replaced
+          ansible.builtin.assert:
+            that:
+              - pxc_release_download.changed
+              - release_test_repaired.stat.checksum == release_test_content | hash('sha256')
+
+        - name: Record successful download, repeat and cache repair
+          ansible.builtin.set_fact:
+            release_test_passed: "{{ release_test_passed + ['valid download and permissions', 'unchanged repeat', 'corrupt cache repair'] }}"
+
+        - name: Reject an installation path outside the versioned cache
+          ansible.builtin.include_tasks: expect-release-rejection.yml
+          vars:
+            pxc_release_package_path: "{{ release_test_directory.path }}/escaped-package.deb"
+            release_test_case: installation path outside protected cache
+            release_test_expected_task: Require an explicitly pinned Percona repository package
+            release_test_expected_message: Review and pin the percona-release version
+
+        - name: Reject a source that does not match the pinned checksum
+          ansible.builtin.include_tasks: expect-release-rejection.yml
+          vars:
+            pxc_release_checksum: "sha256:{{ '0' * 64 }}"
+            release_test_case: checksum mismatch
+            release_test_expected_task: Download the pinned Percona repository package with SHA256 verification
+            release_test_expected_message: did not match
+
+        - name: Check that an unrelated download failure is not accepted as checksum protection
+          block:
+            - name: Exercise the rejection helper with a missing source
+              ansible.builtin.include_tasks: expect-release-rejection.yml
+              vars:
+                pxc_release_url: "file://{{ release_test_directory.path }}/missing-source.txt"
+                pxc_release_checksum: "sha256:{{ '0' * 64 }}"
+                release_test_case: unrelated failure must not count as a checksum rejection
+                release_test_expected_task: Download the pinned Percona repository package with SHA256 verification
+                release_test_expected_message: did not match
+
+            - name: Fail if the helper accepted an unrelated download error
+              ansible.builtin.fail:
+                msg: The checksum regression accepted an unrelated missing-source failure.
+          rescue:
+            - name: Require the rejection helper to detect the wrong failure reason
+              ansible.builtin.assert:
+                that:
+                  - ansible_failed_task.name == 'Require rejection by the expected security check'
+                  - ansible_failed_result.evaluated_to | default(true) == false
+                  - "'release_test_expected_message' in (ansible_failed_result.assertion | default(''))"
+
+            - name: Record successful rejection-helper verification
+              ansible.builtin.set_fact:
+                release_test_passed: "{{ release_test_passed + ['unrelated failure rejected by test helper'] }}"
+
+        - name: Precreate the cached file as an unprivileged owner
+          ansible.builtin.copy:
+            content: Attacker-owned placeholder
+            dest: "{{ pxc_release_package_path }}"
+            owner: "65534"
+            group: "65534"
+            mode: "0644"
+
+        - name: Reject the attacker-owned file before downloading
+          ansible.builtin.include_tasks: expect-release-rejection.yml
+          vars:
+            release_test_case: attacker-owned cached file
+            release_test_expected_task: Refuse an untrusted pre-existing repository package
+            release_test_expected_message: regular root-owned file
+
+        - name: Remove the attacker-owned placeholder
+          ansible.builtin.file:
+            path: "{{ pxc_release_package_path }}"
+            state: absent
+
+        - name: Place a package symlink
+          ansible.builtin.file:
+            src: "{{ release_test_directory.path }}/source.txt"
+            dest: "{{ pxc_release_package_path }}"
+            state: link
+
+        - name: Reject the package symlink
+          ansible.builtin.include_tasks: expect-release-rejection.yml
+          vars:
+            release_test_case: package symlink
+            release_test_expected_task: Refuse an untrusted pre-existing repository package
+            release_test_expected_message: regular root-owned file
+
+        - name: Make the cache directory writable by other users
+          ansible.builtin.file:
+            path: "{{ pxc_release_cache_dir }}"
+            mode: "0777"
+
+        - name: Reject a writable cache directory
+          ansible.builtin.include_tasks: expect-release-rejection.yml
+          vars:
+            release_test_case: world-writable cache directory
+            release_test_expected_task: Refuse untrusted repository cache directories
+            release_test_expected_message: real root-owned directories
+
+        - name: Remove the unsafe test cache
+          ansible.builtin.file:
+            path: "{{ pxc_release_cache_dir }}"
+            state: absent
+
+        - name: Replace the cache directory with a symlink
+          ansible.builtin.file:
+            src: "{{ release_test_directory.path }}"
+            dest: "{{ pxc_release_cache_dir }}"
+            state: link
+
+        - name: Reject a symlink cache directory
+          ansible.builtin.include_tasks: expect-release-rejection.yml
+          vars:
+            release_test_case: symlink cache directory
+            release_test_expected_task: Refuse untrusted repository cache directories
+            release_test_expected_message: real root-owned directories
+
+        - name: Require every regression case to have completed
+          ansible.builtin.assert:
+            that:
+              - >-
+                release_test_passed | sort ==
+                ['valid download and permissions', 'unchanged repeat', 'corrupt cache repair',
+                 'installation path outside protected cache', 'checksum mismatch',
+                 'unrelated failure rejected by test helper', 'attacker-owned cached file',
+                 'package symlink', 'world-writable cache directory', 'symlink cache directory'] | sort
+
+        - name: Report the completed regression cases
+          ansible.builtin.debug:
+            var: release_test_passed
+      always:
+        - name: Remove only this run's temporary fixtures
+          ansible.builtin.file:
+            path: "{{ release_test_directory.path }}"
+            state: absent

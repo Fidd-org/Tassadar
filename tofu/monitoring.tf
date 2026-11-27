@@ -16,9 +16,5 @@ resource "digitalocean_droplet" "monitoring" {
   monitoring = true
   tags       = [digitalocean_tag.monitoring[each.key].name]
 
-  user_data = <<-EOT
-    #cloud-config
-    ssh_pwauth: false
-    disable_root: false
-  EOT
+  user_data = local.automation_cloud_init
 }

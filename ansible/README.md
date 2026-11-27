@@ -21,6 +21,16 @@ run plan/apply. Supply a private key with mode 0600 (or stricter) and verified
 known_hosts entries for the bastion public IP and all managed private IPs.
 SSH checks host keys on both hops and keeps private keys on the controller.
 
+Both hops use the `ansible` account created by OpenTofu cloud-init. Remote service
+playbooks escalate with `become: true`; direct root SSH is disabled. The current
+account has `NOPASSWD:ALL` sudo for provisioning, not a restricted command list.
+Temporary modules and SSH control sockets use the current user's `~/.ansible/`
+directories rather than shared fixed paths in `/tmp`.
+
+Existing root-only VMs are not migrated by generating a new inventory. Changing
+Droplet user data requires VM replacement; review the infrastructure plan and
+preserve the PXC data volumes. Do not bypass this by enabling root SSH fallback.
+
 The local default is inventory_host_key_checking=yes with pinned keys.
 CI explicitly sets inventory_host_key_checking=accept-new and uses a fresh,
 empty controller file; SSH learns the first key automatically. Changed keys
@@ -61,8 +71,11 @@ ansible-playbook playbooks/connectivity/check-connectivity.yml
 ```
 
 It requires all seven expected hosts and role groups, waits for SSH/Python
-(up to 300 seconds per host), then runs Ansible ping on every VM. Empty/partial inventory, partial host selection, unavailable SSH
-or missing Python fail the check. No services or packages are installed.
+(up to 300 seconds per host), then verifies Ansible ping, the `ansible` login,
+noninteractive sudo and the key-only SSH/root-login policy on every VM, including
+`Match` rules for `ansible` and `root` at the actual connection addresses.
+Empty/partial inventory, partial host selection, unavailable SSH, missing Python
+or invalid sudo/SSH policy fail the check. No services or packages are installed.
 GitHub Actions exposes the same check operation with controller-only temporary
 keys and inventory; the current CI version is pinned in requirements.txt.
 Infrastructure apply runs the same check before mandatory monitoring deployment.
@@ -117,7 +130,7 @@ all three nodes:
 - validates Ubuntu, the inventory host names, and the generated root password;
 - waits until `cloud-init` has finished;
 - installs the packages required by the official Percona apt repository;
-- installs `percona-release` and enables the `pxc80` repository;
+- verifies a versioned `percona-release` DEB against its pinned SHA256 in a root-owned cache, then enables the `pxc80` repository;
 - waits for the dedicated data device at `/dev/disk/by-id/scsi-0DO_Volume_<node>-data`;
 - formats the device as `ext4` only when it does not already contain a
   filesystem;
@@ -372,3 +385,19 @@ MySQL service, writes through both survivors and runs the recovery role.
 It then requires all three nodes to read the baseline and outage records.
 The role checks that both survivors are ready, synced members of the same
 two-node Primary component before it changes the target.
+
+## Local package-security regression
+
+From `ansible/`, with the pinned Ansible version installed:
+
+```bash
+sudo "$(command -v ansible-playbook)" -i localhost, tests/pxc-release.yml
+```
+
+This uses local root privileges to test ownership checks on isolated temporary
+text files. It installs no packages, connects to no cloud hosts, and removes its
+fixtures afterwards. Cases cover a valid download, unchanged repeat, corrupt
+cache repair, an installation path outside the cache, checksum mismatch,
+attacker-owned files and package/cache symlinks or writable directories. Negative
+cases must fail at the expected guard with the expected reason; an unrelated
+download error must fail the test instead of counting as checksum protection.

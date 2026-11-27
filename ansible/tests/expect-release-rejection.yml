@@ -1,0 +1,24 @@
+---
+- name: Exercise a rejected package-cache condition
+  block:
+    - name: Run the real repository download tasks
+      ansible.builtin.include_tasks: ../roles/pxc/tasks/download-release.yml
+
+    - name: Fail if the unsafe condition was accepted
+      ansible.builtin.fail:
+        msg: The unsafe repository download unexpectedly succeeded.
+  rescue:
+    - name: Require rejection by the expected security check
+      ansible.builtin.assert:
+        that:
+          - ansible_failed_task.name == release_test_expected_task
+          - >-
+            release_test_expected_message in
+            (([ansible_failed_result.msg | default('')]
+              + (ansible_failed_result.results | default([])
+                 | map(attribute='msg', default='') | list)) | join('\n'))
+        fail_msg: "Unexpected failure in {{ ansible_failed_task.name }}: {{ ansible_failed_result.msg | default('') }}"
+
+    - name: Record the rejected condition
+      ansible.builtin.set_fact:
+        release_test_passed: "{{ release_test_passed + [release_test_case] }}"

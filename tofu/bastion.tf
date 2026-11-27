@@ -8,9 +8,5 @@ resource "digitalocean_droplet" "bastion" {
   monitoring = true
   tags       = [digitalocean_tag.bastion.name]
 
-  user_data = <<-EOT
-    #cloud-config
-    ssh_pwauth: false
-    disable_root: false
-  EOT
+  user_data = local.automation_cloud_init
 }

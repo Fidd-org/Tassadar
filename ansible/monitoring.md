@@ -23,7 +23,9 @@ localhost; it does not connect to a VM or install Grafana.
 
 New VMs may need time to start SSH/Python. Connectivity waits up to 300 seconds
 per host before failing (connectivity_wait_timeout can override the timeout).
-Each role also waits for cloud-init before package operations. CI uses the
+Connections use the cloud-init `ansible` user; the check also verifies sudo and
+the effective SSH authentication policy. Each role also waits for cloud-init
+before package operations. CI uses the
 accept-new policy described below. Grafana receives its password only during
 credential validation, deployment and final verification.
 

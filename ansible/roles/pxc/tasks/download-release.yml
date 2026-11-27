@@ -1,0 +1,78 @@
+---
+- name: Require an explicitly pinned Percona repository package
+  ansible.builtin.assert:
+    that:
+      - pxc_release_version is match('^[0-9]+\.[0-9]+-[0-9]+\.generic$')
+      - pxc_release_checksum is match('^sha256:[a-f0-9]{64}$')
+      - pxc_release_cache_dir is ansible.builtin.abs
+      - pxc_release_package_path == pxc_release_cache_dir ~ '/percona-release_' ~ pxc_release_version ~ '_all.deb'
+    fail_msg: Review and pin the percona-release version and SHA256 before installation.
+
+- name: Inspect repository cache directories without following symlinks
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    follow: false
+    get_checksum: false
+    get_mime: false
+  loop:
+    - "{{ pxc_release_cache_dir | dirname }}"
+    - "{{ pxc_release_cache_dir }}"
+  register: pxc_release_cache_probe
+
+- name: Refuse untrusted repository cache directories
+  ansible.builtin.assert:
+    that:
+      - >-
+        not item.stat.exists or
+        (item.stat.isdir | default(false)
+         and not (item.stat.islnk | default(false))
+         and item.stat.uid == 0
+         and item.stat.mode is match('^0[0-7][0145][0145]$'))
+    fail_msg: Percona cache paths must be real root-owned directories without group or other write access.
+  loop: "{{ pxc_release_cache_probe.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Create protected Percona repository cache directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ pxc_release_cache_dir | dirname }}"
+    - "{{ pxc_release_cache_dir }}"
+
+- name: Inspect the cached package without following symlinks
+  ansible.builtin.stat:
+    path: "{{ pxc_release_package_path }}"
+    follow: false
+    get_checksum: false
+    get_mime: false
+  register: pxc_release_file_probe
+
+- name: Refuse an untrusted pre-existing repository package
+  ansible.builtin.assert:
+    that:
+      - >-
+        not pxc_release_file_probe.stat.exists or
+        (pxc_release_file_probe.stat.isreg | default(false)
+         and not (pxc_release_file_probe.stat.islnk | default(false))
+         and pxc_release_file_probe.stat.uid == 0
+         and pxc_release_file_probe.stat.mode is match('^0[0-7][0145][0145]$'))
+    fail_msg: The cached Percona package must be a regular root-owned file without group or other write access.
+
+- name: Download the pinned Percona repository package with SHA256 verification
+  ansible.builtin.get_url:
+    url: "{{ pxc_release_url }}"
+    dest: "{{ pxc_release_package_path }}"
+    checksum: "{{ pxc_release_checksum }}"
+    owner: root
+    group: root
+    mode: "0644"
+    timeout: 60
+  register: pxc_release_download
+  until: pxc_release_download is succeeded
+  retries: 3
+  delay: 5

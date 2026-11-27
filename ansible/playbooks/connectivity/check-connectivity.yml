@@ -51,7 +51,87 @@
     - name: Check the Ansible connection
       ansible.builtin.ping:
 
-    - name: Record successful connectivity only after all pings finish
+    - name: Verify the unprivileged automation login
+      ansible.builtin.command: id --user --name
+      register: connectivity_login
+      changed_when: false
+      become: false
+
+    - name: Require the dedicated Ansible SSH account
+      ansible.builtin.assert:
+        that:
+          - connectivity_login.stdout | trim == 'ansible'
+        fail_msg: SSH must connect as the dedicated ansible account, not root.
+
+    - name: Verify noninteractive privilege escalation
+      ansible.builtin.command: id --user
+      become: true
+      become_user: root
+      register: connectivity_sudo
+      changed_when: false
+
+    - name: Require root privileges for service provisioning
+      ansible.builtin.assert:
+        that:
+          - connectivity_sudo.stdout | trim == '0'
+        fail_msg: The ansible account must support noninteractive sudo for provisioning.
+
+    - name: Wait for first-boot SSH configuration to finish
+      ansible.builtin.command: cloud-init status --wait
+      become: true
+      changed_when: false
+
+    - name: Read the actual SSH connection addresses without sudo
+      ansible.builtin.command: printenv SSH_CONNECTION
+      become: false
+      register: connectivity_ssh_connection
+      changed_when: false
+
+    - name: Decode the SSH connection tuple
+      ansible.builtin.set_fact:
+        connectivity_ssh_peer: "{{ connectivity_ssh_connection.stdout.split() }}"
+
+    - name: Require a valid SSH connection tuple before testing Match rules
+      ansible.builtin.assert:
+        that:
+          - connectivity_ssh_peer | length == 4
+          - connectivity_ssh_peer[0] is match('^[0-9a-fA-F:.]+$')
+          - connectivity_ssh_peer[2] is match('^[0-9a-fA-F:.]+$')
+          - connectivity_ssh_peer[1] is match('^[0-9]+$')
+          - connectivity_ssh_peer[3] is match('^[0-9]+$')
+          - 0 < connectivity_ssh_peer[1] | int <= 65535
+          - 0 < connectivity_ssh_peer[3] | int <= 65535
+        fail_msg: SSH_CONNECTION must identify the actual client and server addresses and ports.
+
+    - name: Read the SSH policy for the automation and root accounts including Match rules
+      ansible.builtin.command:
+        argv:
+          - /usr/sbin/sshd
+          - -T
+          - -C
+          - >-
+            user={{ item }},host={{ connectivity_ssh_peer[0] }},addr={{ connectivity_ssh_peer[0] }},laddr={{ connectivity_ssh_peer[2] }},lport={{ connectivity_ssh_peer[3] }}
+      become: true
+      loop: [ansible, root]
+      register: connectivity_sshd
+      changed_when: false
+
+    - name: Require key-only SSH and disabled root login
+      ansible.builtin.assert:
+        that:
+          - "'permitrootlogin no' in item.stdout_lines"
+          - "'passwordauthentication no' in item.stdout_lines"
+          - "'kbdinteractiveauthentication no' in item.stdout_lines"
+          - "'pubkeyauthentication yes' in item.stdout_lines"
+          - "'authenticationmethods publickey' in item.stdout_lines"
+          # Numeric peer hostnames above match sshd's behavior with UseDNS disabled.
+          - "'usedns no' in item.stdout_lines"
+        fail_msg: Both SSH accounts must deny root/password login and require public keys with UseDNS disabled.
+      loop: "{{ connectivity_sshd.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Record successful connectivity only after all authentication and sudo checks finish
       ansible.builtin.copy:
         content: "{{ ansible_play_hosts_all | sort | to_json }}"
         dest: "{{ connectivity_summary_path }}"

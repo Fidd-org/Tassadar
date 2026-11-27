@@ -16,6 +16,11 @@ Ansible connects to private VM addresses through the bastion. Inventory is
 generated from state automatically. Grafana, Prometheus and exporters use
 private addresses; access the UI through an SSH tunnel.
 
+Cloud-init creates an `ansible` SSH account on new VMs and disables direct root,
+password and keyboard-interactive SSH login. Service playbooks use sudo through
+`become: true`. The account has passwordless administrative sudo, so protect its
+SSH key as a root credential. No additional GitHub Secret is needed.
+
 PXC uses native VM packages. Its deploy operation initializes three new nodes or verifies an
 already healthy cluster without bootstrapping it again. A partial cluster or
 existing inactive data stops deployment for diagnosis/recovery. A fresh deploy

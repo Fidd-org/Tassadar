@@ -1,5 +1,11 @@
 ---
 pxc_repo: pxc80
+# Bootstrap DEB: SHA256 from the signed noble prel APT index, reviewed together with the version.
+pxc_release_version: "1.0-34.generic"
+pxc_release_url: "https://repo.percona.com/prel/apt/pool/main/p/percona-release/percona-release_{{ pxc_release_version }}_all.deb"
+pxc_release_checksum: "sha256:c140cc0ede3e5a1b484ef41522ceeba47af01b372be3b2e26814c451797f000f"
+pxc_release_cache_dir: /var/cache/tassadar/percona
+pxc_release_package_path: "{{ pxc_release_cache_dir }}/percona-release_{{ pxc_release_version }}_all.deb"
 pxc_cluster_name: tassadar-pxc
 pxc_provider: /usr/lib/galera4/libgalera_smm.so
 pxc_sst_method: xtrabackup-v2
