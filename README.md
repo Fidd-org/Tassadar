@@ -71,7 +71,15 @@ No manual IP addresses or `ANSIBLE_KNOWN_HOSTS` Secret are required.
 ## Automatic code checks
 
 `Validate code` runs on pull requests and pushes to `master`. It checks OpenTofu
-format/configuration, parses all Ansible source YAML and syntax-checks playbooks.
+format/configuration, parses Ansible source YAML and syntax-checks playbooks.
+ShellCheck analyzes shell scripts; Actionlint checks workflows and inline shell;
+Zizmor checks workflow security offline. Each check has a separate job.
+Zizmor's standard (`regular`) findings block validation; additional `auditor`
+findings are printed for review. The run Summary groups findings by rule, with
+counts, affected files and links to lines; full diagnostics remain in the step
+log. Errors while running either pass or building the report still fail
+the job. Existing Secrets-without-Environment warnings in deployment workflows
+remain open; a green validation does not mean those access protections are configured.
 It uses no production secrets, state backend, cloud plan/apply or SSH connections.
 These are source checks; they do not verify deployment or recovery on real VMs.
 
@@ -80,6 +88,23 @@ To repeat locally with OpenTofu and the pinned Ansible runtime installed:
 ```bash
 bash .github/scripts/validate-opentofu.sh
 bash .github/scripts/validate-ansible.sh
+```
+
+Analyzer versions, official release URLs and SHA256 values are pinned together
+in [.github/analysis-tools.json](.github/analysis-tools.json). Updates are reviewed
+as ordinary PRs: update version, URL, archive member and SHA256 together using
+the official release, then run the checks. The installer verifies the archive
+before running its executable.
+For local analysis on Linux x86_64, use an owned temporary directory:
+
+```bash
+export RUNNER_TEMP="$(mktemp -d)"
+for tool in shellcheck actionlint zizmor; do
+  bash .github/scripts/install-analysis-tool.sh "$tool"
+done
+for tool in shellcheck actionlint zizmor; do
+  bash .github/scripts/validate-analysis.sh "$tool"
+done
 ```
 
 ## Deploy from GitHub
